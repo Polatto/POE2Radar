@@ -10,6 +10,32 @@ quality-of-life feature.
 > game. Automating input may violate Path of Exile's Terms of Service and could put your account at
 > risk. This is a personal/educational tool — you are responsible for how you use it.
 
+## About this fork
+
+This repository is a fork of [Sikaka/POE2Radar](https://github.com/Sikaka/POE2Radar). All credit
+for the original overlay goes to its authors; this fork keeps the upstream history and tracks it as
+the `upstream` remote. Releases linked below are the upstream ones and do **not** include the
+changes listed here — build from source to get them. Everything added stays read-only: nothing in
+this fork writes to game memory.
+
+Fixes and additions so far:
+
+- **Offsets for the 2026-11-18 patch** — recovered and re-validated (`Game/Poe2Offsets.cs`),
+  including the atlas node's EndgameMaps row and its rumour field.
+- **Fogged atlas nodes** — labels the map/content of nodes still hidden under the atlas fog
+  (dashboard toggle *Fog labels*).
+- **Expedition island rumours** — shows each ocean island's rumour (e.g. "Somethin' fishy",
+  "Cold as ice") on the atlas before it is revealed (dashboard toggle *Island rumours*).
+- **Atlas nav fix** — the atlas graph was read once and went stale as the atlas grew, so routes to
+  fogged targets were missing. The graph is now rebuilt whenever the edge vector changes, and the
+  new `Game/AtlasNav.cs` does a multi-source BFS from every accessible node to **every** matching
+  target (e.g. all fogged *Matriarch Halls*, not just a completed one). Nav rules also match the
+  map Id. `/api/atlas` now reports `graphVersion` and the nav plan.
+- **Research probes** (`POE2Radar.Research`): `--atlas-fogdump`, `--ui-strings-dump` /
+  `--ui-strings-diff`, `--atlas-nav-debug "<tag>"` (explains why a target is or isn't routed) and
+  `--boat-dump` (Expedition logbook boats — region action buttons and the 16×16 grid block each one
+  reveals).
+
 ## Features
 
 - **Map overlay** — when the in-game map is open, draws the walkable-terrain mask + entity dots,
