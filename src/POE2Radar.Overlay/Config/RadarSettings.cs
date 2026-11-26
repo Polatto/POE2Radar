@@ -118,6 +118,12 @@ public sealed class RadarSettings
     // the game draws those itself). On by default. Size is the icon height in px before any scaling.
     public bool AtlasShowContentIcons { get; set; } = true;
     public float AtlasContentIconSize { get; set; } = 26f;
+    // Fog labels: on every FOGGED atlas node (element local-visible bit off) draw a small text label with the
+    // map display name (+ the content headline, if any) so un-revealed maps can be read. On by default.
+    public bool AtlasShowFogLabels { get; set; } = true;
+    // Island rumours: fogged atlas nodes whose EndgameMaps row carries an Expedition rumour (ocean islands) get
+    // "Map · rumour" in teal. Off → those nodes fall back to the plain fog label. On by default.
+    public bool AtlasShowRumours { get; set; } = true;
     // Route chevron spacing (#4): gap between the directional arrowheads drawn along a route, as a multiple
     // of the chevron size (higher = more spread out). Mirrors the GameHelper2 Atlas plugin's RouteArrowSpacing.
     public float AtlasRouteArrowSpacing { get; set; } = 8f;

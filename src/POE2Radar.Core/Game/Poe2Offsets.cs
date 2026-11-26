@@ -60,14 +60,14 @@ public static class Poe2
     /// </summary>
     public static class AreaInstance
     {
-        public const int AreaInfoPtr      = 0x098;  // ✓ → WorldAreas row (see Poe2.AreaInfo); Code validated 'P3_3'/'Glacial Tarn'. 2026-09-05 league patch shifted -0x08 (was 0x0A0, which now holds the WorldAreas.dat file object, not the row).
-        public const int LocalPlayer      = 0x5D0;  // ✓ → player Entity (value-scanned player matched here). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x5B8); 2026-06-25 shifted +0x18 (was 0x5A0).
-        public const int ServerDataPtr    = 0x5B0;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5D0). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x598); 2026-06-25 shifted +0x18 (was 0x580).
-        public const int AwakeEntities    = 0x6F0;  // ✓ StdMap of live entities (id→EntityPtr). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x6D8); 2026-06-25 shifted +0x18 (was 0x6C0).
-        public const int SleepingEntities = 0x700;  // ✓ StdMap. 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x6E8); 2026-06-25 shifted +0x18 (was 0x6D0).
-        public const int TerrainMetadata  = 0x8D0;  // ✓ TerrainStruct base. 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x8B8); 2026-06-25 shifted +0x18 (was 0x8A0).
-        public const int CurrentAreaLevel = 0x0BC;  // ✓ int — per-area. 2026-09-05 league patch shifted -0x08 (was 0x0C4, which now reads 0).
-        public const int CurrentAreaHash  = 0x114;  // ✓ uint — per-area random hash. 2026-09-05 league patch shifted -0x08 (was 0x11C).
+        public const int AreaInfoPtr      = 0x0A0;  // ✓ 2026-11-18 patch: back to 0xA0 (--recover: row code "G_Endgame_Town"). → WorldAreas row (see Poe2.AreaInfo); Code validated 'P3_3'/'Glacial Tarn'. 2026-09-05 league patch shifted -0x08 (was 0x0A0, which now holds the WorldAreas.dat file object, not the row).
+        public const int LocalPlayer      = 0x5D8;  // ✓ 2026-11-18 patch shifted +0x08 (--recover HIT). → player Entity (value-scanned player matched here). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x5B8); 2026-06-25 shifted +0x18 (was 0x5A0).
+        public const int ServerDataPtr    = 0x5B8;  // ✓ 2026-11-18 +0x08 (block shift, unvalidated). → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5D0). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x598); 2026-06-25 shifted +0x18 (was 0x580).
+        public const int AwakeEntities    = 0x718;  // ✓ 2026-11-18 +0x28 (--verify-fields: size=201). StdMap of live entities (id→EntityPtr). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x6D8); 2026-06-25 shifted +0x18 (was 0x6C0).
+        public const int SleepingEntities = 0x728;  // ✓ 2026-11-18 +0x28 (--verify-fields). StdMap. 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x6E8); 2026-06-25 shifted +0x18 (was 0x6D0).
+        public const int TerrainMetadata  = 0x8F8;  // ✓ 2026-11-18 +0x28 (--verify-fields: grid 1288x1426 CONSISTENT). TerrainStruct base. 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x8B8); 2026-06-25 shifted +0x18 (was 0x8A0).
+        public const int CurrentAreaLevel = 0x0C4;  // ? 2026-11-18 +0x08 (reads 65 in Ziggurat Refuge; confirm in a map). int — per-area. 2026-09-05 league patch shifted -0x08 (was 0x0C4, which now reads 0).
+        public const int CurrentAreaHash  = 0x11C;  // ? 2026-11-18 +0x08 (0x114 now reads a pointer half; confirm changes per zone). uint — per-area random hash. 2026-09-05 league patch shifted -0x08 (was 0x11C).
     }
 
     /// <summary>
@@ -604,17 +604,23 @@ public static class Poe2
     /// reading +0x08 fixed web-UI filters where Prettify(code) mismatched the in-game name.</summary>
     public static class AtlasMapRow
     {
-        public const int WorldAreaName = 0x32; // ✓ live 2026-09-05 — packed ptr → localized name ("[DNT] District B"). 2026-09-05: was 0x08, which now holds an art path (*.dds), not the name.
+        /// <summary>✓ live 2026-11-25 (Research --atlas-rumours) — on the EndgameMaps.dat row reached via
+        /// <see cref="AtlasNode.EndgameMapRow"/> (rows are 0xF1 bytes, packed/unaligned): +0xE3 → UTF-16
+        /// Expedition "island rumour" (e.g. "Warm but risky..." on ExpeditionLogBook_Prairie). Null/empty
+        /// for normal maps.</summary>
+        public const int Rumour = 0xE3;
+        public const int WorldAreaName = 0x08; // ✓ live 2026-11-25 — 2026-11-18 patch moved it back to 0x08 (--atlas-fogdump: *(row+0x08) = 'Steaming Springs', 1228/1228 rows). Was 0x32 on 2026-09-05: — packed ptr → localized name ("[DNT] District B"). 2026-09-05: was 0x08, which now holds an art path (*.dds), not the name.
     }
 
     public static class AtlasNode
     {
+        public const int EndgameMapRow = 0x2F0; // ✓ live 2026-11-25 — ptr → this node's EndgameMaps.dat row (+0x2F8 = the dat file obj); row +AtlasMapRow.Rumour → island rumour
         public const int MapNodeId   = 0x300; // ✓ u32 — distinct per node
-        public const int Content     = 0x310; // ⚠ 2026-09-05: this slot is now GridPos, NOT a content-row ptr. Rolled content lives on the +0x300 row at +0x38. Do not read as content.
+        public const int Content     = 0x310; // ✓ 2026-11-25: content-row ptr again (GridPos moved back to +0x320); non-null ⇒ headline content (+0x38 → row, +0x30 name). (2026-09-05 it held GridPos.)
         public const int State       = 0x32C; // (community) u8 state (seen =1 on loaded nodes)
         public const int Biome       = 0x32E; // ⚠ 2026-09-05: NO LONGER a 0..12 biome index (byte scatter 0..255). Independently confirmed by --atlas-nodescan finding no biome-shaped field anywhere on the node or its data struct. Unresolved — do not rely on it.
         public const int Flags       = 0x32F; // (community) u8: bit0 unlocked, bit1 visited
-        public const int GridPos     = 0x310;  // ✓ live 2026-09-05 StdTuple2D<int> X[-48..31] Y[16..127] — the node-graph key. 2026-09-05: was 0x320. // ✓ live 2026-06-08 — StdTuple2D<int> atlas grid coord (X,Y); 1:1 with node, range small (e.g. X[-16..31] Y[0..47]). The key for node-graph pathfinding. (GameHelper2-sourced)
+        public const int GridPos     = 0x320;  // ✓ live 2026-11-25 — 2026-11-18 patch moved it back to 0x320 (--atlas-fogdump: 1228 nodes, X[-32..111] Y[-32..79], 1982/1982 edges resolve). Was 0x310 on 2026-09-05: StdTuple2D<int> X[-48..31] Y[16..127] — the node-graph key. 2026-09-05: was 0x320. // ✓ live 2026-06-08 — StdTuple2D<int> atlas grid coord (X,Y); 1:1 with node, range small (e.g. X[-16..31] Y[0..47]). The key for node-graph pathfinding. (GameHelper2-sourced)
         public const int Completion  = 0x339; // (community) u8 per-node completion id
         public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
 
@@ -627,10 +633,14 @@ public static class Poe2
         public const int DataStorage = 0x10;   // *(node+0x10) → storage
         public const int DataModel   = 0x20;   // *(storage+0x20) → nodeData
         public const int DataBiome   = 0x2CE;  // u8 within nodeData
-        public const int DataStatus  = 0x2BC;  // ✓ live 2026-09-05 — u8 within nodeData: bit0 accessible, bit1 completed, bit2 locked.
+        public const int DataStatus  = 0x2CF;  // ✓ live 2026-11-25 — 2026-11-18 patch moved it back to 0x2CF (= element +0x32F; nodeData = el+0x60).
+                                               // Low bits: bit0 accessible (1), bit1 completed (3), bit2 locked (4); bit 0x10 = has content.
+                                               // Before 11-18: 0x2BC — u8 within nodeData: bit0 accessible, bit1 completed, bit2 locked.
                                                // 2026-09-05: was 0x2CF, which now reads a CONSTANT — so every node reported
                                                // Completed=true and `atlasHideCompleted` hid the entire atlas. Re-found by
                                                // --atlas-gridscan's status sweep: {1 x177 accessible, 3 x70 completed, 4 x153 locked}.
+        public const int DataStatusLockedBit     = 0x04; // ✓ live 2026-11-25 — status bit2 = locked
+        public const int DataStatusHasContentBit = 0x10; // ✓ live 2026-11-25 — status bit set on nodes carrying content (badge/headline)
         public const int DataMapId   = 0x290;  // ✓ live 2026-09-05 — ptr chain → UTF-16 "MapXxx" (the ROLLED map). 2026-09-05: was 0x2A0.  // ptr chain → UTF-16 "MapXxx"
     }
 
@@ -670,8 +680,8 @@ public static class Poe2
     /// the shallowest stable path). <see cref="ExpectedChildCount"/> is a secondary signature (18 children).</summary>
     public static class AtlasPanel
     {
-        public const int UiRootChildIndex  = 22; // ✓ live 2026-06-08 — stable across a cold restart
-        public const int ExpectedChildCount = 18; // ✓ signature (panel had 18 children closed + open)
+        public const int UiRootChildIndex  = 21; // ✓ live 2026-11-25 — 2026-11-18 patch moved it 22→21 (canvas ancestor = UiRoot child [21], Research --atlas-readnodes --canvas). Was 22 (✓ 2026-06-08, stable across a cold restart).
+        public const int ExpectedChildCount = 19; // ✓ 2026-11-25 signature: 19 children (atlas closed). Was 18.
     }
 
     /// <summary>World hover tracker (community, 2026-06-07): <c>*(UiRoot+0x7D8)+0x630</c>; hovered entity

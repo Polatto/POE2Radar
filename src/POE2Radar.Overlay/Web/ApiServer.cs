@@ -510,6 +510,8 @@ public sealed class ApiServer : IDisposable
         atlasHideAccessible = _settings.AtlasHideAccessible,
         atlasShowContentIcons = _settings.AtlasShowContentIcons,
         atlasContentIconSize = _settings.AtlasContentIconSize,
+        atlasShowFogLabels = _settings.AtlasShowFogLabels,
+        atlasShowRumours = _settings.AtlasShowRumours,
         atlasRouteArrowSpacing = _settings.AtlasRouteArrowSpacing,
         atlasGroups = _settings.AtlasGroups,
     };
@@ -558,6 +560,8 @@ public sealed class ApiServer : IDisposable
                 case "atlasHideAccessible" when TryBool(p.Value, out var b): _settings.AtlasHideAccessible = b; applied.Add(p.Name); break;
                 case "atlasShowContentIcons" when TryBool(p.Value, out var b): _settings.AtlasShowContentIcons = b; applied.Add(p.Name); break;
                 case "atlasContentIconSize" when TryFloat(p.Value, out var f): _settings.AtlasContentIconSize = Math.Clamp(f, 12f, 64f); applied.Add(p.Name); break;
+                case "atlasShowFogLabels" when TryBool(p.Value, out var b): _settings.AtlasShowFogLabels = b; applied.Add(p.Name); break;
+                case "atlasShowRumours" when TryBool(p.Value, out var b): _settings.AtlasShowRumours = b; applied.Add(p.Name); break;
                 case "atlasRouteArrowSpacing" when TryFloat(p.Value, out var f): _settings.AtlasRouteArrowSpacing = Math.Clamp(f, 1.5f, 18f); applied.Add(p.Name); break;
                 // Whole-object writes (the dashboard re-POSTs the full sub-object on edit). Parsed,
                 // sanitized/clamped, then swapped in. A malformed sub-object is skipped, not fatal.

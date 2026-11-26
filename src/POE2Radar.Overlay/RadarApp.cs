@@ -1151,8 +1151,21 @@ public sealed class RadarApp : IDisposable
             _atlasMarkFrame.Clear();
             if (ar.Open)
             {
+                // Fog-label-only marks (hundreds when the atlas is mostly fogged) are NOT re-read one by one:
+                // all nodes are siblings on one canvas, so a pan shifts every relPos by the same delta. Take
+                // that delta from one live-read reference mark and apply it to the fog-only marks.
+                float pdx = 0f, pdy = 0f; var havePan = false;
                 foreach (var m in ar.Marks)
-                    _atlasMarkFrame.Add(m.Element != 0 && _liveRender.TryRelPos(m.Element, out var mx, out var my) ? m with { X = mx, Y = my } : m);
+                {
+                    var fogOnly = m.FogLabel != null && !m.Selected && !m.Arrow && !m.Nav && m.Label == null && m.ContentIcons is not { Count: > 0 };
+                    if (fogOnly && havePan) { _atlasMarkFrame.Add(m with { X = m.X + pdx, Y = m.Y + pdy }); continue; }
+                    if (m.Element != 0 && _liveRender.TryRelPos(m.Element, out var mx, out var my))
+                    {
+                        if (!havePan) { pdx = mx - m.X; pdy = my - m.Y; havePan = true; }
+                        _atlasMarkFrame.Add(m with { X = mx, Y = my });
+                    }
+                    else _atlasMarkFrame.Add(m);
+                }
 
                 // Fresh live pos when the read validates, else the world-walk's baked pos — never a garbage
                 // coordinate (which would streak route lines off-screen). Points stay contiguous (no dropping).
@@ -1272,6 +1285,7 @@ public sealed class RadarApp : IDisposable
             AtlasBiomeBorder: _settings.AtlasShowBiomeBorder,
             AtlasContentIcons: _settings.AtlasShowContentIcons,
             AtlasContentIconSize: _settings.AtlasContentIconSize,
+            AtlasFogLabels: _settings.AtlasShowFogLabels,
             AtlasRouteArrowSpacing: _settings.AtlasRouteArrowSpacing,
             AtlasDrawAll: _settings.AtlasDrawAll,
             // Rune-crafting reward prices (screen-space; only when the panel is open).
@@ -2379,6 +2393,8 @@ public sealed class RadarApp : IDisposable
             routing = new
             {
                 graphNodes = _atlas.GraphNodeCount,
+                graphVersion = _atlas.GraphVersion,
+                navPlan = _lastNavLog,
                 currentGrid = _atlas.CurrentNodeGrid() is { } cgd ? $"{cgd.X},{cgd.Y}" : null,
                 accessible = nodes.Count(n => n.Accessible),
                 completed = nodes.Count(n => n.Completed),
@@ -2547,9 +2563,12 @@ public sealed class RadarApp : IDisposable
         sig = sig * 1000003L ^ (curGrid?.GetHashCode() ?? 0);                       // re-solve routes as the player moves
         sig = sig * 1000003L ^ (_settings.AtlasAutoRoute ? 1L : 0L) ^ ((long)_settings.AtlasAutoRouteMaxHops << 1);
         sig = sig * 1000003L ^ (long)(_settings.AtlasNavTags?.Count ?? 0);          // re-solve when the nav set changes
+        if (_settings.AtlasNavTags is { } navT)                                      // …incl. a same-size edit (rename)
+            foreach (var t in navT) sig = sig * 31L ^ StringComparer.OrdinalIgnoreCase.GetHashCode(t ?? "");
+        sig = sig * 1000003L ^ _atlas.GraphVersion;                                  // re-solve when the graph grows (atlas streams in)
         // Rebuild when the #3 hide filters, #5 icon toggle, or #7 group set change.
         sig = sig * 1000003L ^ (_settings.AtlasHideCompleted ? 2L : 0L) ^ (_settings.AtlasHideAccessible ? 4L : 0L)
-            ^ (_settings.AtlasShowContentIcons ? 8L : 0L) ^ ((long)(_settings.AtlasGroups?.Count ?? 0) << 4);
+            ^ (_settings.AtlasShowContentIcons ? 8L : 0L) ^ (_settings.AtlasShowFogLabels ? 16L : 0L) ^ (_settings.AtlasShowRumours ? 1L << 40 : 0L) ^ ((long)(_settings.AtlasGroups?.Count ?? 0) << 5);
         if (_builtAtlasOnce && _atlas.AllTagsResolved && sig == _lastAtlasSig)
             return;   // view + inputs unchanged → marks/route stay frozen (off-screen arrows don't jitter)
         _lastAtlasSig = sig; _builtAtlasOnce = true;
@@ -2565,20 +2584,9 @@ public sealed class RadarApp : IDisposable
         var hlTrack = new HashSet<string>(_settings.AtlasHighlightTags ?? new(), StringComparer.OrdinalIgnoreCase);
         var hlNav = new HashSet<string>(_settings.AtlasNavTags ?? new(), StringComparer.OrdinalIgnoreCase);
         var hlArrow = new HashSet<string>(_settings.AtlasArrowTags ?? new(), StringComparer.OrdinalIgnoreCase);
-        // A node matches a rule set if its map name, one of its content tags, OR its map-archetype KIND
-        // (Citadel/Boss/Tower/Unique/Merchant — improvement 3) is in the set. Returns the matched token.
-        static string? Match(HashSet<string> set, in Poe2Atlas.AtlasNodeLive nd)
-        {
-            if (set.Count == 0) return null;
-            if (!string.IsNullOrEmpty(nd.MapName) && set.Contains(nd.MapName)) return nd.MapName;
-            if (nd.Tags is { Count: > 0 }) foreach (var t in nd.Tags) if (set.Contains(t)) return t;
-            if (!string.IsNullOrEmpty(nd.Kind) && nd.Kind != "Normal" && set.Contains(nd.Kind)) return nd.Kind;
-            // maps.json classification (#7): type (e.g. "unique") + cross-cutting tags (lineage/arbiter),
-            // so one-click "route to all uniques / lineage / arbiter" works without listing each map.
-            if (!string.IsNullOrEmpty(nd.MapType) && set.Contains(nd.MapType)) return nd.MapType;
-            if (nd.MapDataTags is { Count: > 0 }) foreach (var t in nd.MapDataTags) if (set.Contains(t)) return t;
-            return null;
-        }
+        // A node matches a rule set if its map name / MapId, one of its content tags, its map-archetype KIND, or
+        // its maps.json type/tags is in the set (shared with Research --atlas-nav-debug via Core AtlasNav).
+        static string? Match(HashSet<string> set, in Poe2Atlas.AtlasNodeLive nd) => AtlasNav.Match(set, nd);
         // #7 colour groups: map display name → group colour (the first group containing it). A matched node
         // with no per-rule colour falls back to its group colour. Built once per rebuild.
         Dictionary<string, string>? groupColor = null;
@@ -2627,16 +2635,35 @@ public sealed class RadarApp : IDisposable
             // renderer draws icons only for !Visible nodes), so we reveal content on un-revealed maps. Otherwise
             // only highlighted/nav/arrow maps draw. AtlasDrawAll debug overrides this to draw every node.
             bool foggedIconNode = contentIcons is { Count: > 0 } && !n.Visible;
-            if (!_settings.AtlasDrawAll && !isTracked && !isNav && !isArrow && !foggedIconNode) continue;
+            // Fog label: every FOGGED node (element local-visible bit, Flags +0x168 bit 0x0B, off) gets a small
+            // "Map name · headline" text so un-revealed maps can be read. Independent of the tracking rules.
+            // Island rumours: a fogged node whose EndgameMaps row carries an Expedition rumour (ocean islands —
+            // "Warm but risky...") gets "Map · headline · rumour" in a distinct teal (AtlasMark.Rumour). Own toggle
+            // (AtlasShowRumours); when off, these nodes fall back to the plain fog label.
+            string? fogLabel = null; var rumourMark = false;
+            if (!n.Visible)
+            {
+                var head = n.Tags is { Count: > 0 } ? n.Tags[0] : null;
+                var nm = string.IsNullOrEmpty(n.MapName) ? null : n.MapName;
+                var baseLabel = nm != null && head != null ? $"{nm} · {head}" : (nm ?? head);
+                if (_settings.AtlasShowRumours && !string.IsNullOrEmpty(n.Rumour))
+                {
+                    fogLabel = baseLabel != null ? $"{baseLabel} · {n.Rumour}" : n.Rumour;
+                    rumourMark = true;
+                }
+                else if (_settings.AtlasShowFogLabels) fogLabel = baseLabel;
+            }
+            if (!_settings.AtlasDrawAll && !isTracked && !isNav && !isArrow && !foggedIconNode && fogLabel == null) continue;
             var matched = mTrack ?? mNav ?? mArrow;
             var label = matched ?? (isTracked || isNav || isArrow
                 ? (n.Tags is { Count: > 0 } ? n.Tags[0] : (string.IsNullOrEmpty(n.MapName) ? null : n.MapName))
                 : null);   // icon-only fogged marks carry no label (icons alone)
             string? color = matched != null && _settings.AtlasHighlightColors.TryGetValue(matched, out var c) ? c
                 : (groupColor != null && !string.IsNullOrEmpty(n.MapName) && groupColor.TryGetValue(n.MapName, out var gc) ? gc : null);
-            // Route to NAV tiles that aren't already done — independent of the ring/arrow toggles.
+            // Route to NAV tiles that aren't already done — independent of the ring/arrow toggles. (The goal set
+            // itself is recomputed by AtlasNav.Solve below; this just records the ring colour per goal.)
             if (isNav && !n.Completed) { trackedGrids.Add(n.Grid); gridColor[n.Grid] = color; }
-            marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow, isNav, n.Element, contentIcons, n.Visible));
+            marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow, isNav, n.Element, contentIcons, n.Visible, fogLabel, rumourMark));
         }
 
         // ── Auto-routing (improvement 1): "you are here" + a route to each tracked tile ──────────────
@@ -2650,28 +2677,34 @@ public sealed class RadarApp : IDisposable
             // the mouse. We deliberately do NOT seed from the current-node marker: on some patches that
             // element tracks the HOVERED tile, which made every route re-origin from the cursor ("navs to
             // whatever I mouse over"). Fall back to the marker only when no accessible node is known (rare).
-            var sources = new List<(int, int)>();
-            foreach (var n in nodes) if (n.Accessible) sources.Add(n.Grid);
-            if (sources.Count == 0 && curGrid is { } c0 && _atlas.GraphHas(c0)) sources.Add(c0);
-            if (sources.Count > 0)
+            // Shared with Research --atlas-nav-debug (Core AtlasNav): same Match, sources and BFS, so the probe
+            // explains exactly what is drawn here. Capped at 30 routes, nearest first (keep the view readable).
+            var plan = AtlasNav.Solve(_atlas, nodes, hlNav, _settings.AtlasAutoRouteMaxHops, curGrid, cap: 30);
+            foreach (var r in plan.Drawable)
             {
-                foreach (var kv in _atlas.RoutesFromSources(sources, trackedGrids).OrderBy(r => r.Value.Count))
-                {
-                    int hops = kv.Value.Count - 1;
-                    if (hops <= 0) continue;                                       // already on the tile
-                    if (_settings.AtlasAutoRouteMaxHops > 0 && hops > _settings.AtlasAutoRouteMaxHops) continue;
-                    var pts = new List<AtlasPoint>(kv.Value.Count);
-                    foreach (var gp in kv.Value) if (gridToPoint.TryGetValue(gp, out var ep)) pts.Add(ep);
-                    if (pts.Count < 2) continue;
-                    gridColor.TryGetValue(kv.Key, out var col);
-                    autoRoutes.Add(new AtlasAutoSpec(pts, col, hops));
-                    if (autoRoutes.Count >= 30) break;                            // keep the view readable
-                }
+                var pts = new List<AtlasPoint>(r.Path!.Count);
+                foreach (var gp in r.Path) if (gridToPoint.TryGetValue(gp, out var ep)) pts.Add(ep);
+                if (pts.Count < 2) continue;
+                gridColor.TryGetValue(r.Goal, out var col);
+                autoRoutes.Add(new AtlasAutoSpec(pts, col, r.Hops));
             }
+            LogNavPlanOnce(plan);
         }
 
         var (start, end, route) = BuildAtlasRoute(nodes, startGrid, goalGrid);
         _atlasRender = new AtlasRender(true, marks, start, end, route, currentPt, autoRoutes);   // publish atomically
+    }
+
+    private string? _lastNavLog;
+    /// <summary>Console line describing the Nav plan (goals per status), logged only when it changes — so a
+    /// "no route drawn" report shows why (not-in-graph / unreachable / too-many-hops) without a probe.</summary>
+    private void LogNavPlanOnce(AtlasNav.Plan plan)
+    {
+        var summary = $"[atlas nav] sources={plan.Sources.Count} goals={plan.Goals.Count} graph={_atlas.GraphNodeCount}v/v{_atlas.GraphVersion} " +
+            string.Join(" ", plan.Results.GroupBy(r => r.Status).Select(g => $"{g.Key}={g.Count()}"));
+        if (summary == _lastNavLog) return;
+        _lastNavLog = summary;
+        Console.WriteLine(summary);
     }
 
     /// <summary>Resolve the F10 START/END grid coords to canvas-space (relPos) points for the markers, and —

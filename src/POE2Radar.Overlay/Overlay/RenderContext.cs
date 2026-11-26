@@ -46,7 +46,7 @@ public readonly record struct ItemLabel(Vector3 World, string Name, string Value
 /// "AtlasIconContentBreach") drawn in a row above the node (#5); null/empty = no icons. <see cref="Visible"/>
 /// is the node's live in-game visibility — icons are suppressed on visible nodes (the game draws its own
 /// there) and shown on fogged/off-screen ones.</summary>
-public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false, bool Nav = false, nint Element = 0, IReadOnlyList<string>? ContentIcons = null, bool Visible = false);
+public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false, bool Nav = false, nint Element = 0, IReadOnlyList<string>? ContentIcons = null, bool Visible = false, string? FogLabel = null, bool Rumour = false);
 
 /// <summary>One auto-route polyline from the player's current atlas node (or the accessible frontier) to a
 /// tracked target tile. <see cref="Points"/> are canvas-space node centers (relPos), projected with the
@@ -201,6 +201,8 @@ public sealed record RenderContext(
     // in AtlasMark.ContentIcons; the renderer looks each basename up in its AtlasIconCache.
     bool AtlasContentIcons = true,
     float AtlasContentIconSize = 26f,
+    // Fog labels: small map-name (+ headline) text on fogged nodes (AtlasMark.FogLabel). Mirrors settings.
+    bool AtlasFogLabels = true,
     // Route chevron spacing (#4): gap between directional arrowheads along a route, ×chevron size.
     float AtlasRouteArrowSpacing = 8f,
     // DEBUG: draw every node's coverage ring (mirrors RadarSettings.AtlasDrawAll). When false, only

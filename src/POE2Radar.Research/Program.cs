@@ -15,6 +15,14 @@ using POE2Radar.Research;
 Console.WriteLine("POE2Radar.Research");
 Console.WriteLine("==================");
 
+// File-only mode: needs no game process.
+if (HasFlag(args, "--ui-strings-diff"))
+{
+    var di = Array.IndexOf(args, "--ui-strings-diff");
+    if (di + 2 >= args.Length) { Console.Error.WriteLine("usage: --ui-strings-diff <a> <b>"); return 1; }
+    return POE2Radar.Research.UiStringsDump.Diff(args[di + 1], args[di + 2]);
+}
+
 // --pid <N> forces attach to a specific process (needed when PoE1 + PoE2 run side by side, since both
 // match the candidate names and AttachToPoE would otherwise grab whichever it finds first).
 var pidArg = TryGetIntArg(args, "--pid");
@@ -51,6 +59,20 @@ if (HasFlag(args, "--atlas-gates"))
 
 if (HasFlag(args, "--atlas-gridscan"))
     return POE2Radar.Research.AtlasGridScan.Run(process, reader, (int)(TryGetHexArg(args, "--grid") ?? Poe2.AtlasNode.GridPos));
+
+if (HasFlag(args, "--atlas-fogdump"))
+    return POE2Radar.Research.AtlasFogDump.Run(process, reader,
+        TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "atlas-fogdump.txt"),
+        (int)(TryGetHexArg(args, "--grid") ?? 0x320), (int)(TryGetHexArg(args, "--hexlen") ?? 0x100));
+
+if (HasFlag(args, "--boat-dump"))
+    return POE2Radar.Research.BoatDump.Run(process, reader,
+        TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "boat-dump.txt"),
+        TryGetHexArg(args, "--btnvt") ?? 0x30F8918, TryGetHexArg(args, "--nodevt") ?? 0x30F5718);
+
+if (HasFlag(args, "--ui-strings-dump"))
+    return POE2Radar.Research.UiStringsDump.Run(process, reader,
+        TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "ui-strings.txt"));
 
 if (HasFlag(args, "--atlas-nodescan"))
     return POE2Radar.Research.AtlasNodeScan.Run(process, reader, (int)(TryGetHexArg(args, "--lo") ?? 0x200), (int)(TryGetHexArg(args, "--hi") ?? 0x420), !HasFlag(args, "--direct"));
@@ -374,6 +396,26 @@ if (HasFlag(args, "--atlas-content"))
 if (HasFlag(args, "--atlas-resolve"))
     return RunAtlasResolve(process, reader);
 
+// --atlas-rumours: verify the Expedition "island rumour" read through the CORE path (Poe2Atlas.ReadNodes →
+// AtlasNodeLive.Rumour = el+AtlasNode.EndgameMapRow → row+AtlasMapRow.Rumour). Atlas must be open.
+if (HasFlag(args, "--atlas-rumours"))
+{
+    var (_, igsR, _, _) = ResolveChain(process, reader);
+    if (igsR == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var atlasR = new POE2Radar.Core.Game.Poe2Atlas(reader);
+    var rn = atlasR.ReadNodes(igsR);
+    for (var w = 0; rn.Count == 0 && w < 30; w++) { Thread.Sleep(100); rn = atlasR.ReadNodes(igsR); }
+    for (var w = 0; !atlasR.AllTagsResolved && w < 60; w++) { Thread.Sleep(50); rn = atlasR.ReadNodes(igsR); }
+    if (rn.Count == 0) { Console.Error.WriteLine("no atlas nodes (is the Atlas open?)"); return 1; }
+    var withR = rn.Where(n => n.Rumour.Length > 0).OrderBy(n => n.Rumour, StringComparer.Ordinal).ThenBy(n => n.GridX).ThenBy(n => n.GridY).ToList();
+    foreach (var n in withR)
+        Console.WriteLine($"  ({n.GridX,4},{n.GridY,4})  visible={(n.Visible ? 1 : 0)}  state=0x{n.State:X2}  {(n.MapName.Length > 0 ? n.MapName : n.MapCode),-28}  \"{n.Rumour}\"");
+    Console.WriteLine($"nodes={rn.Count} withRumour={withR.Count} fogged={withR.Count(n => !n.Visible)} visible={withR.Count(n => n.Visible)} allTags={atlasR.AllTagsResolved}");
+    foreach (var g in withR.GroupBy(n => n.Rumour).OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal))
+        Console.WriteLine($"  {g.Count(),3}  (fogged {g.Count(n => !n.Visible),3})  \"{g.Key}\"");
+    return 0;
+}
+
 if (HasFlag(args, "--atlas-graph"))
     return RunAtlasGraph(process, reader);
 
@@ -388,6 +430,15 @@ if (HasFlag(args, "--atlas-findcur"))
 
 if (HasFlag(args, "--atlas-marker"))
     return RunAtlasMarker(process, reader);
+
+if (HasFlag(args, "--atlas-nav-debug"))
+{
+    var (_, igsN, _, _) = ResolveChain(process, reader);
+    if (igsN == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var ti = Array.IndexOf(args, "--atlas-nav-debug");
+    var navTag = ti + 1 < args.Length && !args[ti + 1].StartsWith("--") ? args[ti + 1] : "The Matriarch Halls";
+    return POE2Radar.Research.AtlasNavDebug.Run(reader, igsN, navTag, TryGetIntArg(args, "--max-hops") ?? 0);
+}
 
 if (HasFlag(args, "--atlas-readnodes"))
 {
@@ -405,6 +456,28 @@ if (HasFlag(args, "--atlas-readnodes"))
     Console.WriteLine("sample (visible, hasContent or unvisited):");
     foreach (var n in n2.Where(n => n.Visible && (n.HasContent || !n.Visited)).Take(16))
         Console.WriteLine($"  id={n.Id,-9} biome={n.Biome,-2} content={n.Content,-6} flags=0x{n.Flags:X2}(unlk={(n.Unlocked ? 1 : 0)} vis={(n.Visited ? 1 : 0)}) compl={n.Completion} pos=({n.X:F0},{n.Y:F0}) size=({n.W:F0}x{n.H:F0}) scale={n.Scale:G4}");
+    // Open-gate check (works with the atlas CLOSED): given the node canvas (from --atlas-fogdump), find
+    // which UiRoot child is its ancestor — must equal Poe2.AtlasPanel.UiRootChildIndex for the gate to open.
+    if (TryGetHexArg(args, "--canvas") is { } canv)
+    {
+        nint P(nint a) => reader.TryReadStruct<nint>(a, out var p) ? p : 0;
+        var uiR = P(igs2 + Poe2.InGameState.UiRoot);
+        var kb = P(uiR + Poe2.UiElement.Children); var ke = P(uiR + Poe2.UiElement.ChildrenEnd);
+        var kids = new List<nint>(); for (var a = kb; a != 0 && a < ke && kids.Count < 512; a += 8) kids.Add(P(a));
+        var cur = (nint)canv; var hit = -1;
+        for (var g = 0; g < 32 && cur != 0 && hit < 0; g++) { hit = kids.IndexOf(cur); var par = P(cur + Poe2.UiElement.Parent); if (par == cur) break; cur = par; }
+        var panelKids = hit >= 0 ? (P(kids[hit] + Poe2.UiElement.ChildrenEnd) - P(kids[hit] + Poe2.UiElement.Children)) / 8 : -1;
+        Console.WriteLine($"gate: uiRoot children={kids.Count}; canvas ancestor = uiRoot child [{hit}] (configured {Poe2.AtlasPanel.UiRootChildIndex}), panel children={panelKids} (expected {Poe2.AtlasPanel.ExpectedChildCount})");
+    }
+    // Core-path validation (2026-11-18 offsets): node class, grid, names, status, graph, fog.
+    for (var w = 0; !atlas.AllTagsResolved && w < 60; w++) { Thread.Sleep(50); n2 = atlas.ReadNodes(igs2); }
+    var grids = n2.Select(n => n.Grid).Distinct().Count();
+    Console.WriteLine($"core: nodes={n2.Count} distinctGrid={grids} gx[{(n2.Count > 0 ? n2.Min(n => n.GridX) : 0)}..{(n2.Count > 0 ? n2.Max(n => n.GridX) : 0)}] gy[{(n2.Count > 0 ? n2.Min(n => n.GridY) : 0)}..{(n2.Count > 0 ? n2.Max(n => n.GridY) : 0)}] " +
+        $"graphVerts={atlas.GraphNodeCount} gridsInGraph={n2.Count(n => atlas.GraphHas(n.Grid))} current={atlas.CurrentNodeGrid()?.ToString() ?? "?"} allTags={atlas.AllTagsResolved}");
+    Console.WriteLine($"core: named={n2.Count(n => n.MapName.Length > 0)} coded={n2.Count(n => n.MapCode.Length > 0)} tagged={n2.Count(n => n.Tags.Count > 0)} hasContent={n2.Count(n => n.HasContent)} " +
+        $"accessible={n2.Count(n => n.Accessible)} completed={n2.Count(n => n.Completed)} locked={n2.Count(n => n.Locked)} fogged={n2.Count(n => n.Fogged)} foggedNamed={n2.Count(n => n.Fogged && n.MapName.Length > 0)} foggedTagged={n2.Count(n => n.Fogged && n.Tags.Count > 0)}");
+    foreach (var n in n2.Where(n => n.Fogged && n.Tags.Count > 0).Take(8).Concat(n2.Where(n => n.Fogged && n.Tags.Count == 0).Take(4)))
+        Console.WriteLine($"  fog grid={n.Grid} status=0x{n.Status:X2} map='{n.MapName}' ({n.MapCode}) tags=[{string.Join(", ", n.Tags)}]");
     return 0;
 }
 

@@ -278,14 +278,18 @@ public sealed class Poe2Atlas
         float X, float Y, float W, float H, float Scale, bool Visible, int IconType,
         int GridX, int GridY, string MapName, string MapCode, IReadOnlyList<string> Tags,
         bool Accessible, bool Completed, string Kind,
-        string MapType, string MapGroup, IReadOnlyList<string> MapDataTags)
+        string MapType, string MapGroup, IReadOnlyList<string> MapDataTags, byte Status = 0, string Rumour = "")
     {
         /// <summary>The node's atlas grid coordinate (<see cref="Poe2Offsets.AtlasNode.GridPos"/>) — the
         /// key into the connection graph for routing (unique per node; stable while the atlas is open).</summary>
         public (int X, int Y) Grid => (GridX, GridY);
         public bool Unlocked => (Flags & 0x01) != 0;
         public bool Visited => (Flags & 0x02) != 0;
-        public bool HasContent => Content != 0;   // +0x310 (atlas-row ptr) non-null ⇒ has rolled content
+        public bool HasContent => Content != 0 || (Status & Poe2.AtlasNode.DataStatusHasContentBit) != 0; // +0x310 content-row ptr non-null, or status bit 0x10 (✓ 2026-11-25)
+        /// <summary>Status bit2 (nodeData +0x2CF) — the node is locked.</summary>
+        public bool Locked => (Status & Poe2.AtlasNode.DataStatusLockedBit) != 0;
+        /// <summary>Fogged = element local visible bit (Flags +0x168 bit 0x0B) off.</summary>
+        public bool Fogged => !Visible;
         // Accessible/Completed are decoded from the deeper node-data status byte (the GameHelper-validated
         // source — *(node+0x10)+0x20 +0x2CF, bit0 accessible / bit1 completed). Accessible ("you can run
         // this now") is the route SOURCE frontier; the element-flag Unlocked/Visited bits are kept separate.
@@ -303,11 +307,20 @@ public sealed class Poe2Atlas
     private readonly Dictionary<nint, (string code, string map, string[] content, AtlasMapData.MapMeta meta)> _tagCache = new();
     private static readonly string[] NoTags = Array.Empty<string>();
 
+    // Expedition "island rumour" per EndgameMaps row (el+AtlasNode.EndgameMapRow → row; row+AtlasMapRow.Rumour →
+    // UTF-16). Rows are static dat data, so keyed by ROW pointer (not element) and never re-read; survives
+    // Invalidate. Only ~174 rows exist; the size guard is a safety net against a garbage pointer flood.
+    private readonly Dictionary<nint, string> _rumourCache = new();
+
     // Atlas CONNECTION GRAPH (grid coord → neighbour grid coords), read from the canvas's edge vector
     // (Poe2.AtlasGraph.ConnectionsVec). Static while the atlas is open, so it's read once per canvas and
     // cached (rebuilt on Invalidate / canvas change). This is what enables node-to-node routing.
     private readonly Dictionary<(int, int), List<(int, int)>> _graph = new();
     private nint _graphCanvas;   // canvas the cached _graph was built from (0 = not built)
+    private nint _graphBegin, _graphEnd;   // edge-vector bounds the cached _graph was built from (rebuild on change)
+    /// <summary>Bumped every time the connection graph is (re)built — feeds the overlay's freeze signature so
+    /// routes re-solve when the graph grows.</summary>
+    public int GraphVersion { get; private set; }
     // The current-location ("player icon") marker: the lone non-node element whose +0x300 → a node. Located
     // during DetectNodeClass (vtable-independent — see Poe2.AtlasGraph.CurrentMarkerNodePtr). *(marker+0x300)
     // is the node the player is currently in (the route's true start).
@@ -418,13 +431,13 @@ public sealed class Poe2Atlas
             // Accessible/completed status: the GameHelper-validated deeper model
             // *(node+DataStorage)+DataModel → status byte +0x2CF (bit0 accessible, bit1 completed). This is
             // the route SOURCE frontier ("maps you can run right now"). Cheap (2 derefs + 1 byte).
-            bool accessible = false, completed = false;
+            bool accessible = false, completed = false; byte status = 0;
             var storage = Ptr(el + Poe2.AtlasNode.DataStorage);
             if (storage != 0)
             {
                 var model = Ptr(storage + Poe2.AtlasNode.DataModel);
                 if (model != 0 && _reader.TryReadStruct<byte>(model + Poe2.AtlasNode.DataStatus, out var stb))
-                { accessible = (stb & 1) != 0; completed = (stb & 2) != 0; }
+                { status = stb; accessible = (stb & 1) != 0; completed = (stb & 2) != 0; }
             }
             // Resolved (cached): map name (all nodes) + rolled content tags (nodes with a +0x310 row).
             // Budget-limited per call so the first read doesn't hitch the tick; fills in over a few calls.
@@ -436,11 +449,38 @@ public sealed class Poe2Atlas
             var kind = Classify(resolved.code);   // map-archetype class (Citadel/Boss/Tower/Unique/Merchant/Normal) — first-class track target
             var meta = resolved.meta;             // offline maps.json classification (type/group/tags); default when unmapped
             outNodes.Add(new AtlasNodeLive(el, id, content, state, biome, flags, compl, x, y, w, h, scale, visible, iconType, gridX, gridY, resolved.map, resolved.code, resolved.content, accessible, completed, kind,
-                meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags));
+                meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags, status, ReadRumour(el)));
         }
         if (matched < 8) { Invalidate(); return false; }          // canvas no longer the node container
         AllTagsResolved = allCached;   // true once every node's tags are cached (seed defaults only then)
         EnsureGraph();                 // (re)read the connection-edge vector once per canvas (cached)
+        return true;
+    }
+
+    /// <summary>The node's Expedition "island rumour" ("Warm but risky...") or "" — el+0x2F0 → EndgameMaps row,
+    /// row+0xE3 → UTF-16 (✓ live 2026-11-25). One pointer read per node per call; the string itself is read
+    /// once per row and cached (rows are static). Caller holds <c>_nodeLock</c>.</summary>
+    private string ReadRumour(nint el)
+    {
+        var row = Ptr(el + Poe2.AtlasNode.EndgameMapRow);
+        if (row == 0) return "";
+        if (_rumourCache.TryGetValue(row, out var cached)) return cached;
+        var rumour = "";
+        var sp = Ptr(row + Poe2.AtlasMapRow.Rumour);          // packed/unaligned row field — RPM doesn't care
+        if (sp != 0)
+        {
+            var s = _reader.ReadStringUtf16(sp, 121);
+            if (s.Length is >= 2 and <= 120 && IsPrintable(s)) rumour = s.Trim();
+        }
+        if (_rumourCache.Count > 4096) _rumourCache.Clear();
+        _rumourCache[row] = rumour;
+        return rumour;
+    }
+
+    private static bool IsPrintable(string s)
+    {
+        foreach (var c in s)
+            if (c < ' ' || c is >= (char)0x7F and < (char)0xA0 || char.IsSurrogate(c) || c == '￿') return false;
         return true;
     }
 
@@ -449,7 +489,7 @@ public sealed class Poe2Atlas
     /// defaults only when the full map/content set is available.</summary>
     public bool AllTagsResolved { get; private set; }
 
-    private void Invalidate() { _nodeCanvas = 0; _nodeVtable = 0; _hiddenTicks = 0; _tagCache.Clear(); _graph.Clear(); _graphCanvas = 0; _currentMarker = 0; }
+    private void Invalidate() { _nodeCanvas = 0; _nodeVtable = 0; _hiddenTicks = 0; _tagCache.Clear(); _graph.Clear(); _graphCanvas = 0; _graphBegin = 0; _graphEnd = 0; _currentMarker = 0; }
 
     /// <summary>The player's CURRENT atlas node grid coord (the "player icon" tile), via the marker element
     /// (<see cref="Poe2Offsets.AtlasGraph.CurrentMarkerNodePtr"/>): <c>*(marker+0x300)</c> → current node →
@@ -473,20 +513,25 @@ public sealed class Poe2Atlas
     /// <summary>Read the canvas's connection-edge <see cref="StdVector"/> (<see cref="Poe2Offsets.AtlasGraph"/>)
     /// once per canvas and build the bidirectional adjacency by grid coord. Each 20-byte edge is
     /// <c>{ int unknown; StdTuple2D&lt;int&gt; source@+0x04; StdTuple2D&lt;int&gt; target@+0x0C }</c>. Bulk-reads
-    /// the whole vector in one pass (cheap, ~300 edges). No-op when already built for this canvas. Caller
-    /// holds <see cref="_nodeLock"/>.</summary>
+    /// the whole vector in one pass. Caller holds <see cref="_nodeLock"/>.
+    /// <para>Rebuilt whenever the vector's begin/end CHANGE, not just once per canvas: the game streams the
+    /// atlas in, so the edge vector grows (and reallocates) after the canvas is first found. Caching it once
+    /// per canvas froze a partial graph (live 2026-11-25: running overlay had 759 graph vertices vs 5139 on a
+    /// fresh read), so every far/fogged Nav goal was "not in graph" and no auto-route was drawn. Costs two
+    /// pointer reads per call when unchanged.</para></summary>
     private void EnsureGraph()
     {
-        if (_nodeCanvas == 0 || _graphCanvas == _nodeCanvas) return;
-        _graph.Clear(); _graphCanvas = _nodeCanvas;
+        if (_nodeCanvas == 0) return;
         var begin = Ptr(_nodeCanvas + Poe2.AtlasGraph.ConnectionsVec);
         if (begin == 0 || !_reader.TryReadStruct<nint>(_nodeCanvas + Poe2.AtlasGraph.ConnectionsVec + 8, out var end)) return;
+        if (_graphCanvas == _nodeCanvas && begin == _graphBegin && end == _graphEnd && _graph.Count > 0) return;
         var bytes = (long)end - (long)begin;
         if (bytes <= 0 || bytes % Poe2.AtlasGraph.EdgeStride != 0) return;
         var count = (int)(bytes / Poe2.AtlasGraph.EdgeStride);
         if (count is <= 0 or > 200000) return;
         var buf = new byte[count * Poe2.AtlasGraph.EdgeStride];
-        if (_reader.TryReadBytes(begin, buf) < buf.Length) return;
+        if (_reader.TryReadBytes(begin, buf) < buf.Length) return;   // keep the previous graph; retry next call
+        _graph.Clear(); _graphCanvas = _nodeCanvas; _graphBegin = begin; _graphEnd = end; GraphVersion++;
         for (var i = 0; i < count; i++)
         {
             var o = i * Poe2.AtlasGraph.EdgeStride;
@@ -517,6 +562,17 @@ public sealed class Poe2Atlas
     /// <summary>True if the given grid coord is a vertex in the connection graph (has ≥1 edge). Diagnostic —
     /// a node with no edges can't be a route endpoint.</summary>
     public bool GraphHas((int, int) grid) { lock (_nodeLock) return _graph.ContainsKey(grid); }
+
+    /// <summary>Copy of the cached connection graph (grid → neighbours). Diagnostic (Research probes).</summary>
+    public Dictionary<(int, int), List<(int, int)>> GraphSnapshot()
+    {
+        lock (_nodeLock)
+        {
+            var copy = new Dictionary<(int, int), List<(int, int)>>(_graph.Count);
+            foreach (var kv in _graph) copy[kv.Key] = new List<(int, int)>(kv.Value);
+            return copy;
+        }
+    }
 
     public List<(int X, int Y)>? FindPath((int X, int Y) start, (int X, int Y) goal)
     {
@@ -566,7 +622,11 @@ public sealed class Poe2Atlas
     // live 2026-06-20 via the F10 discovery dump: n00[0]+0x300='[DeadlyMapBoss|Deadly Map Boss]'). This badge
     // list carries the boss TIER ("Deadly Map Boss") that the +0x310 headline row collapses to the generic
     // "Powerful Map Boss" — so it's what makes Deadly/Twinned/etc. trackable + navigable.
-    private const int BadgeContentStr = 0x300;
+    // 2026-11-18 patch (✓ live 2026-11-25, --atlas-fogdump n.0.0.i+2E8='Powerful Map Boss'): the badge child now
+    // holds the plain DISPLAY name at +0x2E8 and a "[Code|Display]"-tagged DESCRIPTION at +0x308
+    // ("Area contains a [PowerfulMapBoss|Powerful Map Boss]"). Was a single "[Code|Display]" string at +0x300.
+    private const int BadgeContentStr = 0x2E8;
+    private const int BadgeDescStr    = 0x308;
 
     /// <summary>Read + parse a node's content-badge display names (no lock — caller holds <see cref="_nodeLock"/>,
     /// e.g. ResolveTags via ReadCanvasNodes). Returns the display portion of each "[Code|Display]" badge.</summary>
@@ -585,9 +645,19 @@ public sealed class Poe2Atlas
         {
             var child = Ptr(begin + (nint)(i * 8));
             if (child == 0) continue;
-            var sp = Ptr(child + BadgeContentStr);                  // badge child → content-name ptr
-            if (sp == 0) continue;
-            var name = ParseBadgeName(_reader.ReadStringUtf16(sp, 96));
+            var sp = Ptr(child + BadgeContentStr);                  // badge child → display-name ptr
+            var name = sp != 0 ? ParseBadgeName(_reader.ReadStringUtf16(sp, 96)) : "";
+            if (name.Length == 0)
+            {
+                // Fallback: the description's first "[Code|Display]" token.
+                var dp = Ptr(child + BadgeDescStr);
+                if (dp != 0)
+                {
+                    var d = _reader.ReadStringUtf16(dp, 128);
+                    int lb = d.IndexOf('['), rb = lb >= 0 ? d.IndexOf(']', lb) : -1;
+                    if (rb > lb) name = ParseBadgeName(d.Substring(lb, rb - lb + 1));
+                }
+            }
             if (name.Length > 0 && !result.Contains(name)) result.Add(name);
         }
         return result;
@@ -764,7 +834,24 @@ public sealed class Poe2Atlas
         // it silently produced no code — which is what left every node unclassified.
         code = ReadRolledMapCode(el);
 
-        if (code.Length == 0)
+        // 2026-11-18 layout (✓ live 2026-11-25, --atlas-fogdump 1228/1228): el+0x300 → WorldAreas row directly:
+        // +0x00 → UTF-16 Id ("MapSteamingSprings"), +AtlasMapRow.WorldAreaName (0x08) → localized name
+        // ("Steaming Springs"). Readable on fogged nodes too. Non-map nodes (RitualLeagueBoss, hideouts, …)
+        // carry a row Id with no rolled code, so their localized name still resolves here.
+        var areaRow = Ptr(el + Poe2.AtlasNode.MapNodeId);
+        if (areaRow != 0)
+        {
+            var idP = Ptr(areaRow);
+            var rowCode = idP != 0 ? _reader.ReadStringUtf16(idP, 64) : "";
+            if (LooksLikeName(rowCode))
+            {
+                var nmP = Ptr(areaRow + Poe2.AtlasMapRow.WorldAreaName);
+                name = nmP != 0 ? _reader.ReadStringUtf16(nmP, 64) : "";
+                if (code.Length == 0 && rowCode.StartsWith("Map", StringComparison.Ordinal)) code = rowCode;
+            }
+        }
+
+        if (code.Length == 0 && name.Length == 0)
         {
             // LEGACY fallback: el+0x300 → EndgameMaps row → WorldAreas row {Id, localized name}.
             var mapRow = Ptr(el + Poe2.AtlasNode.MapNodeId);
@@ -833,7 +920,7 @@ public sealed class Poe2Atlas
             }
         }
 
-        // CONTENT BADGES (node[0][0] children, +0x300 → "[Code|Display]"): the boss-TIER badge "Deadly Map
+        // CONTENT BADGES (node[0][0] children, +0x2E8 display / +0x308 description): the boss-TIER badge "Deadly Map
         // Boss" and any other per-node content the headline collapses. Always read (a node can have a badge
         // with a null +0x310 row), de-duped against the headline/mechanic tags above.
         foreach (var bc in BadgeContentsNoLock(el))
@@ -938,7 +1025,7 @@ public sealed class Poe2Atlas
             {
                 if (!_reader.TryReadStruct<int>(el + Poe2.AtlasNode.GridPos, out var gx)) continue;
                 if (!_reader.TryReadStruct<int>(el + Poe2.AtlasNode.GridPos + 4, out var gy)) continue;
-                if (gx is < -64 or > 64 || gy is < 0 or > 192) continue;
+                if (gx is < -200 or > 200 || gy is < -200 or > 200) continue;   // 2026-11-18: live X[-32..111] Y[-32..79]
                 inRange++; coords.Add((gx, gy));
             }
             // Require the coords to be genuinely per-node, not a handful of repeated values.

@@ -64,10 +64,11 @@ public sealed class OverlayRenderer : IDisposable
     // always draws; the cache may therefore point several keys at one instance (deduped on Dispose).
     private readonly Dictionary<string, ID2D1PathGeometry?> _geoCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private ID2D1SolidColorBrush? _bPlayer, _bOther, _bText, _bPanel, _bLandmark;
+    private ID2D1SolidColorBrush? _bPlayer, _bOther, _bText, _bPanel, _bLandmark, _bRumour;
     private ID2D1SolidColorBrush? _bPath;  // recolored per route via SetColor
     private ID2D1SolidColorBrush? _bStyle; // scratch brush for config-driven icons / HP bars (recolored per draw)
     private IDWriteTextFormat? _tf;
+    private IDWriteTextFormat? _tfSmall;   // atlas fog labels (small)
     private bool _ready;
 
     public OverlayRenderer(OverlayWindow window) { _window = window; }
@@ -81,9 +82,11 @@ public sealed class OverlayRenderer : IDisposable
         _bText     = rt.CreateSolidColorBrush(ColText);
         _bPanel    = rt.CreateSolidColorBrush(ColPanel);
         _bLandmark = rt.CreateSolidColorBrush(ColLandmark);
+        _bRumour   = rt.CreateSolidColorBrush(new Color4(0.25f, 0.92f, 0.88f, 1f)); // teal: Expedition island-rumour fog labels
         _bPath     = rt.CreateSolidColorBrush(PathPalette[0]);
         _bStyle    = rt.CreateSolidColorBrush(ColText);
         _tf = _window.DWriteFactory.CreateTextFormat("Consolas", null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, 12f, "en-us");
+        _tfSmall = _window.DWriteFactory.CreateTextFormat("Consolas", null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, 10f, "en-us");
         _atlasIcons = new AtlasIconCache();   // decode embedded atlas content PNGs once (#5)
         _ready = true;
     }
@@ -337,6 +340,17 @@ public sealed class OverlayRenderer : IDisposable
             {
                 float ringR = (n.Selected || n.Arrow) ? 12f : (n.Nav ? 9f : (ctx.AtlasDrawAll ? 11f : 0f));
                 DrawAtlasContentIcons(rt, n.ContentIcons, sx, sy - ringR, ctx.AtlasContentIconSize);
+            }
+
+            // Fog label: small "Map · headline" text centred under a FOGGED node (local visible bit off). Skipped
+            // when the node already carries the regular label chip (tracked/nav/arrow) so text never doubles up.
+            if ((ctx.AtlasFogLabels || n.Rumour) && !n.Visible && n.Label == null && !string.IsNullOrEmpty(n.FogLabel) && _tfSmall != null)
+            {
+                var fl = n.FogLabel!;
+                float fw = fl.Length * 5.6f + 6f;
+                float fx = sx - fw * 0.5f, fy = sy + 7f;
+                rt.FillRectangle(new Vortice.RawRectF(fx - 2f, fy, fx + fw, fy + 14f), _bPanel!);
+                rt.DrawText(fl, _tfSmall, new Rect(fx + 1f, fy, fw + 20f, 14f), (n.Rumour ? _bRumour : _bText)!, DrawTextOptions.None);   // Rect = (x, y, W, H)
             }
 
             var label = n.Label ?? (ctx.AtlasDrawAll && n.IconType > 0 ? n.IconType.ToString() : null);
@@ -1218,11 +1232,12 @@ public sealed class OverlayRenderer : IDisposable
 
     public void Dispose()
     {
-        _bPlayer?.Dispose(); _bOther?.Dispose(); _bText?.Dispose(); _bPanel?.Dispose(); _bLandmark?.Dispose();
+        _bPlayer?.Dispose(); _bOther?.Dispose(); _bText?.Dispose(); _bPanel?.Dispose(); _bLandmark?.Dispose(); _bRumour?.Dispose();
         _bPath?.Dispose(); _bStyle?.Dispose();
         foreach (var geo in _geoCache.Values.Where(g => g is not null).Distinct()) geo!.Dispose();
         _geoCache.Clear();
         _tf?.Dispose();
+        _tfSmall?.Dispose();
         _terrain?.Dispose();
         _atlasIcons?.Dispose();
     }
