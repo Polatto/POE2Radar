@@ -105,7 +105,7 @@ each item's slot/rarity/identified/art/stack/components, `--inv N` for one inven
 for explicit/implicit mod ids + rolled values; self-validates the drift-prone vec hops) + `--itemdump
 <hexItemAddr>` (deep single-item probe: Mods rarity/identified + per-affix id/value + Mods.dat row scan,
 LocalStats statIndex→value, Sockets contents), `--watch` (area-change logger),
-`--dump`, `--presence` (walk-stable before/after diff to
+`--dump`, `--player-hideouts` (public player-hideout owner/reward per atlas node), `--presence` (walk-stable before/after diff to
 find a buffed scalar), `--devtree` (browser-based live memory/UI/entity explorer at
 `localhost:7778` — `DevTree/DevTreeServer.cs` + `DevTreeHtml.cs`; the PoE2 stand-in for ExileApi's
 DevTree), and `--atlas-probe` (one-shot ATLAS PROJECTION recovery/validation — run with the Atlas map
@@ -154,6 +154,12 @@ is rescaled by liveZoom/calibZoom each frame. See `resources/atlas-research-note
   `+0x00`, Slot `+0x08`. Item = Entity; Mods rarity `+0x94`/identified `+0x90`, affix vecs Implicit `+0xA0`/
   Explicit `+0xB8`/Enchant `+0xD0` (ModArrayStruct stride `0x40`, `+0x28` → Mods.dat row → first qword →
   UTF-16 internal mod id); Stack count `+0x18`; RenderItem art `+0x28`.
+- Player hideout atlas nodes (✓ live 2026-11-27, Research `--player-hideouts`): content tag
+  "Player Hideout" (plain claimable hideouts are tagged "Hideout" — excluded). Node `+0x3B0` = inline
+  MSVC std::wstring owner "Name#1234" (+0x10 size, +0x18 cap; cap ≥ 8 ⇒ heap ptr); `+0x3D0` = UNALIGNED
+  ptr to a reward .dat row (stride 0x4B): row `+0x00` → UTF-16 id ("CurrencyModValuesx1"), `+0x1E` →
+  UTF-16 display ("Divine Orb"). Read only for "Player Hideout" nodes (`Poe2Atlas.ReadPlayerHideout`);
+  reward rows cached by row ptr. Hideout mechanic modifier not decoded yet.
 - **Still TBD:** camera world→screen matrix (for world-space nameplates). (Area Name is solved — see
   AreaInfo `+0x08` above.)
 

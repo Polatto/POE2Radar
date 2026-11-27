@@ -562,7 +562,7 @@ public sealed class RadarApp : IDisposable
         Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); display rules: {_displayRules.Count}; known mods: {_modCatalog.Count}");
         _api = new ApiServer(() => _state, _settings, GetNavSelection, ToggleNavTarget, ClearNavSelection,
                              _hidden, _displayRules, _landmarkStore, CurrentTilePaths, () => _modCatalog.All, PricesJson, AtlasJson, SetAtlasSelection,
-                             SetAtlasHighlight, VersionJson, DiagHealthJson, _settings.ApiPort);
+                             SetAtlasHighlight, VersionJson, DiagHealthJson, _settings.ApiPort, AtlasHideoutsJson);
         try { _api.Start(); Console.WriteLine($"API on http://localhost:{_settings.ApiPort} (dashboard at /)"); }
         catch (Exception ex) { Console.Error.WriteLine($"API server disabled: {ex.Message}"); }
         Console.WriteLine("Hotkeys: F6=add nearest path target  F7=clear path targets  "
@@ -2519,6 +2519,8 @@ public sealed class RadarApp : IDisposable
                     }),
                 }),
             },
+            // Public player hideouts (owner / hideout map / reward / grid / fogged) + whether each passes the filter.
+            playerHideouts = PlayerHideoutRows(nodes),
             // The individual live nodes for the dashboard's grid. On-screen first, then content/unvisited.
             nodeList = nodes
                 .OrderByDescending(n => n.Visible).ThenByDescending(n => n.HasContent).ThenByDescending(n => !n.Visited)
@@ -2537,6 +2539,36 @@ public sealed class RadarApp : IDisposable
     // Built-in "Map Targets" preset (#6) — high-value maps to ring/route/arrow on first open, matched by
     // exact internal MapId (reliable via the maps.json layer). Ported from the GameHelper2 Atlas plugin's
     // BuiltInTargets. On=true → seeded as an active default; off targets are discoverable in the dashboard.
+    /// <summary>JSON rows for every public PLAYER hideout node (shared by /api/atlas and /api/atlas-hideouts).</summary>
+    private object[] PlayerHideoutRows(IReadOnlyList<Poe2Atlas.AtlasNodeLive> nodes)
+    {
+        var filter = _settings.AtlasHideoutRewardFilter ?? "";
+        return nodes.Where(n => n.IsPlayerHideout)
+            .OrderBy(n => n.HideoutReward ?? "", StringComparer.OrdinalIgnoreCase).ThenBy(n => n.HideoutOwner, StringComparer.OrdinalIgnoreCase)
+            .Select(n => (object)new
+            {
+                el = ((long)n.Element).ToString(),
+                owner = n.HideoutOwner, map = n.MapName, reward = n.HideoutReward, rewardId = n.HideoutRewardId,
+                grid = new[] { n.GridX, n.GridY }, fogged = !n.Visible, matches = AtlasNav.MatchHideoutFilter(filter, n),
+            }).ToArray();
+    }
+
+    /// <summary>API (/api/atlas-hideouts): the public player hideouts on the open Atlas — the dashboard's live table.</summary>
+    private object AtlasHideoutsJson()
+    {
+        var nodes = _inGameStateForApi != 0 ? _atlas.ReadNodes(_inGameStateForApi) : new List<Poe2Atlas.AtlasNodeLive>();
+        return new
+        {
+            open = nodes.Count > 0,
+            show = _settings.AtlasShowPlayerHideouts,
+            filter = _settings.AtlasHideoutRewardFilter ?? "",
+            list = PlayerHideoutRows(nodes),
+        };
+    }
+
+    // Ring/arrow colour of matched public player hideouts (magenta — distinct from the rule/group palette).
+    private const string PlayerHideoutColor = "#FF4FD8";
+
     private static readonly (string Code, string Color, bool On)[] BuiltInAtlasTargets =
     {
         ("MapUberBoss_StoneCitadel",   "#e0b341", true),   // Citadel gold
@@ -2688,6 +2720,14 @@ public sealed class RadarApp : IDisposable
         // Rebuild when the #3 hide filters, #5 icon toggle, or #7 group set change.
         sig = sig * 1000003L ^ (_settings.AtlasHideCompleted ? 2L : 0L) ^ (_settings.AtlasHideAccessible ? 4L : 0L)
             ^ (_settings.AtlasShowContentIcons ? 8L : 0L) ^ (_settings.AtlasShowFogLabels ? 16L : 0L) ^ (_settings.AtlasShowRumours ? 1L << 40 : 0L) ^ ((long)(_settings.AtlasGroups?.Count ?? 0) << 5);
+        // Player hideouts: toggle + filter text + the hideouts' owner/reward (a reward read that resolves late, or
+        // a hideout appearing/disappearing, must rebuild the frozen marks).
+        var hideoutFilter = _settings.AtlasHideoutRewardFilter ?? "";
+        sig = sig * 1000003L ^ (_settings.AtlasShowPlayerHideouts ? 1L : 0L) ^ ((long)StringComparer.OrdinalIgnoreCase.GetHashCode(hideoutFilter) << 2);
+        if (_settings.AtlasShowPlayerHideouts)
+            foreach (var n in nodes)
+                if (n.IsPlayerHideout)
+                    sig = sig * 31L ^ n.Grid.GetHashCode() ^ StringComparer.Ordinal.GetHashCode(n.HideoutOwner ?? "") ^ ((long)StringComparer.Ordinal.GetHashCode(n.HideoutReward ?? "") << 16);
         if (_builtAtlasOnce && _atlas.AllTagsResolved && sig == _lastAtlasSig)
             return;   // view + inputs unchanged → marks/route stay frozen (off-screen arrows don't jitter)
         _lastAtlasSig = sig; _builtAtlasOnce = true;
@@ -2731,14 +2771,18 @@ public sealed class RadarApp : IDisposable
             var mTrack = Match(hlTrack, n);
             var mNav = Match(hlNav, n);
             var mArrow = Match(hlArrow, n);
-            var isTracked = selected || mTrack != null;   // Highlight (ring)
+            // Public PLAYER hideout matching the reward filter: ring + "Owner · Reward" label (fogged or not) +
+            // off-screen arrow. Exempt from the declutter filters below (you're explicitly hunting it).
+            var hideoutLabel = _settings.AtlasShowPlayerHideouts && AtlasNav.MatchHideoutFilter(hideoutFilter, n) ? AtlasNav.HideoutLabel(n) : null;
+            var isHideout = hideoutLabel != null;
+            var isTracked = selected || mTrack != null || isHideout;   // Highlight (ring)
             var isNav = mNav != null;                     // Nav-to (route line)
-            var isArrow = mArrow != null;                 // Arrow (off-screen pointer)
+            var isArrow = mArrow != null || isHideout;    // Arrow (off-screen pointer)
 
             // #3 declutter: hide done maps (and optionally accessible-now ones). F10 route endpoints are
             // drawn separately (BuildAtlasRoute), so they survive. Completed maps are already nav-excluded.
-            if (_settings.AtlasHideCompleted && n.Completed) continue;
-            if (_settings.AtlasHideAccessible && n.Accessible && !n.Completed) continue;
+            if (!isHideout && _settings.AtlasHideCompleted && n.Completed) continue;
+            if (!isHideout && _settings.AtlasHideAccessible && n.Accessible && !n.Completed) continue;
 
             // #5 on-node content icons: resolve this node's content tags to icon asset basenames. Drawn on
             // tracked nodes and, crucially, on FOGGED nodes the game hides icons on (surfacing what's hidden).
@@ -2780,6 +2824,7 @@ public sealed class RadarApp : IDisposable
                 : null);   // icon-only fogged marks carry no label (icons alone)
             string? color = matched != null && _settings.AtlasHighlightColors.TryGetValue(matched, out var c) ? c
                 : (groupColor != null && !string.IsNullOrEmpty(n.MapName) && groupColor.TryGetValue(n.MapName, out var gc) ? gc : null);
+            if (isHideout) { label = hideoutLabel; color = PlayerHideoutColor; }   // hideout label/colour win (it's what you filtered for)
             // Route to NAV tiles that aren't already done — independent of the ring/arrow toggles. (The goal set
             // itself is recomputed by AtlasNav.Solve below; this just records the ring colour per goal.)
             if (isNav && !n.Completed) { trackedGrids.Add(n.Grid); gridColor[n.Grid] = color; }

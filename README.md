@@ -31,6 +31,13 @@ Fixes and additions so far:
   the island's rumour (dashboard toggle *Boat → islands*; boats are also listed in `/api/atlas`).
   Off-screen atlas node positions are unreliable (the game briefly overwrites them), so links are
   only drawn while the boat and the island are on screen, and are hidden near the screen edges.
+- **Player hideouts** — finds other players' public hideouts on the atlas (the "Player Hideout"
+  nodes from the 0.5.5 supporter-pack beacon) by their reward: each matching node gets a magenta
+  ring with an "Owner · Reward" label (e.g. "Kinto#2375 · Chaos Orb"), also while fogged, plus an
+  off-screen arrow. Dashboard Atlas tab: toggle *Player hideouts*, a *Hideout reward filter*
+  (comma-separated, case-insensitive, matched against reward, reward id and owner, e.g.
+  `divine, exalted`; empty = all) and a live table of every player hideout (`/api/atlas-hideouts`,
+  also `playerHideouts` in `/api/atlas`). The hideout's mechanic modifier is not read yet.
 - **Atlas nav fix** — the atlas graph was read once and went stale as the atlas grew, so routes to
   fogged targets were missing. The graph is now rebuilt whenever the edge vector changes, and the
   new `Game/AtlasNav.cs` does a multi-source BFS from every accessible node to **every** matching
@@ -39,7 +46,7 @@ Fixes and additions so far:
 - **Research probes** (`POE2Radar.Research`): `--atlas-fogdump`, `--ui-strings-dump` /
   `--ui-strings-diff`, `--atlas-nav-debug "<tag>"` (explains why a target is or isn't routed) and
   `--boat-dump` (Expedition logbook boats — region action buttons and the 16×16 grid block each one
-  reveals).
+  reveals) and `--player-hideouts` (owner/reward of every public player hideout node).
 
 ## Features
 

@@ -23,6 +23,34 @@ public static class AtlasNav
         return null;
     }
 
+    /// <summary>Player-hideout reward filter: a comma-separated list of case-insensitive substrings matched against
+    /// the reward display text, reward id and owner. Empty/blank filter ⇒ every player hideout. Non-player-hideout
+    /// nodes never match.</summary>
+    public static bool MatchHideoutFilter(string? filter, in Poe2Atlas.AtlasNodeLive nd)
+    {
+        if (!nd.IsPlayerHideout) return false;
+        if (string.IsNullOrWhiteSpace(filter)) return true;
+        var any = false;
+        foreach (var raw in filter.Split(','))
+        {
+            var t = raw.Trim();
+            if (t.Length == 0) continue;
+            any = true;
+            if ((nd.HideoutReward?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (nd.HideoutRewardId?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (nd.HideoutOwner?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)) return true;
+        }
+        return !any;   // filter was only commas/blanks ⇒ treat as empty
+    }
+
+    /// <summary>"Owner · Reward" label for a player hideout node (null for any other node).</summary>
+    public static string? HideoutLabel(in Poe2Atlas.AtlasNodeLive nd)
+    {
+        if (!nd.IsPlayerHideout) return null;
+        var owner = string.IsNullOrEmpty(nd.HideoutOwner) ? "Player Hideout" : nd.HideoutOwner;
+        return string.IsNullOrEmpty(nd.HideoutReward) ? owner : $"{owner} · {nd.HideoutReward}";
+    }
+
     /// <summary>Route SOURCES: every status-bit0 ("accessible") node. bit0 is set on completed nodes too
     /// (0x03/0x13), so this is completed ∪ the runnable frontier; the BFS therefore starts each route at the
     /// nearest runnable map. Validated live 2026-11-25 (<c>--atlas-nav-debug</c>): of 291 bit0 non-completed

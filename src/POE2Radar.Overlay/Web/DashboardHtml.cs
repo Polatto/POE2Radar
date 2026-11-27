@@ -494,7 +494,12 @@ internal static class DashboardHtml
               <label title="Teal map name + Expedition rumour on fogged ocean-island nodes (off = plain fog label)"><input type="checkbox" data-atset="atlasShowRumours"> Island rumours</label>
               <label title="Line from each usable Expedition logbook boat to the unrevealed islands it reveals (with their rumours)"><input type="checkbox" data-atset="atlasShowBoatLinks"> Boat &rarr; islands</label>
               <label title="Spacing of the directional arrows along routes">Arrow spacing <input type="number" data-atset="atlasRouteArrowSpacing" min="1.5" max="18" step="0.5" style="width:56px"></label>
+              <label title="Ring + 'Owner · Reward' label (also on fogged nodes) + off-screen arrow on public player hideouts (supporter-pack beacon) matching the reward filter"><input type="checkbox" data-atset="atlasShowPlayerHideouts"> Player hideouts</label>
+              <label title="Comma-separated, case-insensitive substrings matched against reward / reward id / owner (e.g. 'divine, exalted'). Empty = all player hideouts.">Hideout reward filter <input type="text" data-atset="atlasHideoutRewardFilter" placeholder="e.g. divine, exalted" style="width:170px"></label>
             </div>
+
+            <!-- public player hideouts (live; polled while this tab is open) -->
+            <div id="atlasHideouts" style="margin:0 0 10px"></div>
 
             <!-- active rules (removable chips) -->
             <div id="atlasActive" style="margin:0 0 8px"></div>
@@ -759,7 +764,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   if(activeTab==='filters') loadFilters();
   if(activeTab==='landmarks') loadLandmarks();
   if(activeTab==='diag') loadDiag();
-  if(activeTab==='atlas'){ if(!atlasData) loadAtlas(); else renderAtlas(); }
+  if(activeTab==='atlas'){ if(!atlasData) loadAtlas(); else renderAtlas(); pollHideouts(); }
 });
 
 /* ── polling (left rail vitals/zone/census) ── */
@@ -1346,11 +1351,43 @@ async function wireAtlasOpts(){
   document.querySelectorAll('#atlasOpts [data-atset]').forEach(el=>{
     const k=el.dataset.atset;
     if(el.type==='checkbox'){ el.checked=!!s[k]; el.onchange=()=>saveSetting(k,el.checked); }
+    else if(el.type==='text'){ el.value=s[k]||''; el.onchange=()=>saveSetting(k, el.value); el.oninput=()=>renderHideouts(); }
     else { el.value=s[k]; el.onchange=()=>saveSetting(k, parseFloat(el.value)); }
   });
   atlasGroupsData = Array.isArray(s.atlasGroups) ? s.atlasGroups.map(g=>({name:g.name||'',color:g.color||'#E0B341',maps:(g.maps||[]).slice()})) : [];
   renderAtlasGroups();
 }
+// Public player hideouts: live table (polled every 3 s while the Atlas tab is open), filtered by the
+// "Hideout reward filter" box with the same rule as the overlay (comma-separated substrings vs reward/id/owner).
+let hideoutData=null;
+function hideoutMatch(h, f){
+  const toks=(f||'').split(',').map(t=>t.trim().toLowerCase()).filter(Boolean);
+  if(!toks.length) return true;
+  const hay=[h.reward,h.rewardId,h.owner].map(x=>(x||'').toLowerCase());
+  return toks.some(t=>hay.some(x=>x.includes(t)));
+}
+function renderHideouts(){
+  const box=document.querySelector('#atlasHideouts'); if(!box) return;
+  const d=hideoutData;
+  if(!d||!d.open){ box.innerHTML='<span class="hint-row" style="opacity:.6">Player hideouts: atlas closed.</span>'; return; }
+  const f=document.querySelector('#atlasOpts [data-atset="atlasHideoutRewardFilter"]')?.value||'';
+  const all=d.list||[], rows=all.filter(h=>hideoutMatch(h,f));
+  const head='<div style="display:grid;grid-template-columns:1.3fr 1.6fr 1.3fr 80px 60px;gap:8px;font-weight:600;padding:4px 8px;border-bottom:1px solid var(--line)"><span>Owner</span><span>Hideout</span><span>Reward</span><span>Grid</span><span>Fogged</span></div>';
+  const body=rows.map(h=>'<div style="display:grid;grid-template-columns:1.3fr 1.6fr 1.3fr 80px 60px;gap:8px;padding:3px 8px;border-bottom:1px solid var(--line)">'
+    +'<span>'+esc(h.owner||'?')+'</span><span>'+esc(h.map||'—')+'</span>'
+    +'<span title="'+esc(h.rewardId||'')+'" style="color:#ff4fd8">'+esc(h.reward||'—')+'</span>'
+    +'<span class="amono">'+(h.grid?h.grid.join(','):'')+'</span><span>'+(h.fogged?'yes':'')+'</span></div>').join('');
+  box.innerHTML='<div class="hint-row" style="margin:0 0 4px"><b>Player hideouts</b> &mdash; '+rows.length+' of '+all.length
+    +(d.show?'':' (overlay drawing is OFF)')+'</div>'
+    +(all.length?'<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;font-size:12px">'+head+(body||'<span class="hint-row" style="padding:6px 8px;display:block">No hideout matches the filter.</span>')+'</div>':'');
+}
+async function pollHideouts(){
+  if(activeTab!=='atlas') return;
+  try{ hideoutData=await getJSON('/api/atlas-hideouts'); }catch(e){ return; }
+  renderHideouts();
+}
+setInterval(pollHideouts, 3000);
+
 function saveAtlasGroups(){ saveSetting('atlasGroups', atlasGroupsData); }
 function renderAtlasGroups(){
   const box=document.querySelector('#atlasGroups'); if(!box) return;

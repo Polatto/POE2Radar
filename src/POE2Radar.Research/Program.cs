@@ -23,6 +23,15 @@ if (HasFlag(args, "--ui-strings-diff"))
     return POE2Radar.Research.UiStringsDump.Diff(args[di + 1], args[di + 2]);
 }
 
+// File-only mode: --saga-diff <tagA> <tagB> [--out dir] (Expedition Saga omen research, see SagaSnap.cs).
+var sagaDir = TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "saga-snaps");
+if (HasFlag(args, "--saga-diff"))
+{
+    var si = Array.IndexOf(args, "--saga-diff");
+    if (si + 2 >= args.Length) { Console.Error.WriteLine("usage: --saga-diff <tagA> <tagB> [--out dir]"); return 1; }
+    return POE2Radar.Research.SagaSnap.Diff(args[si + 1], args[si + 2], sagaDir);
+}
+
 // --pid <N> forces attach to a specific process (needed when PoE1 + PoE2 run side by side, since both
 // match the candidate names and AttachToPoE would otherwise grab whichever it finds first).
 var pidArg = TryGetIntArg(args, "--pid");
@@ -64,6 +73,21 @@ if (HasFlag(args, "--atlas-fogdump"))
     return POE2Radar.Research.AtlasFogDump.Run(process, reader,
         TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "atlas-fogdump.txt"),
         (int)(TryGetHexArg(args, "--grid") ?? 0x320), (int)(TryGetHexArg(args, "--hexlen") ?? 0x100));
+
+if (HasFlag(args, "--saga-snap"))
+{
+    POE2Radar.Research.SagaSnap.Hooks.ResolveServerDataStruct = ResolveServerDataStruct;
+    POE2Radar.Research.SagaSnap.Hooks.FindPlayerInventoriesVec = FindPlayerInventoriesVec;
+    POE2Radar.Research.SagaSnap.Hooks.ProbeInventoryStruct = ProbeInventoryStruct;
+    POE2Radar.Research.SagaSnap.Hooks.ReadItemModIds = ReadItemModIds;
+    POE2Radar.Research.SagaSnap.Hooks.InvName = InvName;
+    POE2Radar.Research.SagaSnap.Hooks.Components = ComponentNamesAndAddrs;
+    POE2Radar.Research.SagaSnap.Hooks.Metadata = ReadEntityMetadata;
+    POE2Radar.Research.SagaSnap.Hooks.WalkEntities = WalkEntities;
+    POE2Radar.Research.SagaSnap.Hooks.EntityGrid = EntityGrid;
+    return POE2Radar.Research.SagaSnap.Snapshot(process, reader,
+        TryGetStrArg(args, "--tag") ?? DateTime.Now.ToString("HHmmss"), sagaDir, TryGetIntArg(args, "--budget") ?? 90);
+}
 
 if (HasFlag(args, "--boat-dump"))
     return POE2Radar.Research.BoatDump.Run(process, reader,
@@ -451,6 +475,45 @@ if (HasFlag(args, "--atlas-rumours"))
     Console.WriteLine($"nodes={rn.Count} withRumour={withR.Count} fogged={withR.Count(n => !n.Visible)} visible={withR.Count(n => n.Visible)} allTags={atlasR.AllTagsResolved}");
     foreach (var g in withR.GroupBy(n => n.Rumour).OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal))
         Console.WriteLine($"  {g.Count(),3}  (fogged {g.Count(n => !n.Visible),3})  \"{g.Key}\"");
+    return 0;
+}
+
+// --player-hideouts: verify the public PLAYER hideout reads through the CORE path (Poe2Atlas.ReadNodes →
+// AtlasNodeLive.HideoutOwner/HideoutRewardId/HideoutReward, el+0x3B0 / el+0x3D0). Atlas must be open. Also
+// sweeps each distinct reward row for every UTF-16 string pointer (re-verifies the +0x1E display field).
+if (HasFlag(args, "--atlas-detect-debug"))
+{
+    var (_, igsD, _, _) = ResolveChain(process, reader);
+    return POE2Radar.Research.AtlasDetectDebug.Run(reader, igsD, (nint)process.MainModuleBase);
+}
+
+if (HasFlag(args, "--player-hideouts"))
+{
+    var (_, igsH, _, _) = ResolveChain(process, reader);
+    if (igsH == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var atlasH = new POE2Radar.Core.Game.Poe2Atlas(reader);
+    var hn = atlasH.ReadNodes(igsH);
+    for (var w = 0; hn.Count == 0 && w < 30; w++) { Thread.Sleep(100); hn = atlasH.ReadNodes(igsH); }
+    for (var w = 0; !atlasH.AllTagsResolved && w < 60; w++) { Thread.Sleep(50); hn = atlasH.ReadNodes(igsH); }
+    if (hn.Count == 0) { Console.Error.WriteLine("no atlas nodes (is the Atlas open?)"); return 1; }
+    var hos = hn.Where(n => n.IsPlayerHideout).OrderBy(n => n.HideoutReward ?? "", StringComparer.OrdinalIgnoreCase).ToList();
+    foreach (var n in hos)
+        Console.WriteLine($"  ({n.GridX,4},{n.GridY,4})  fogged={(n.Visible ? 0 : 1)}  {n.HideoutOwner,-22} {n.MapName,-24} reward=\"{n.HideoutReward}\"  id={n.HideoutRewardId}");
+    Console.WriteLine($"nodes={hn.Count} playerHideouts={hos.Count} plainHideoutTag={hn.Count(n => n.Tags.Contains("Hideout"))} allTags={atlasH.AllTagsResolved}");
+    // Row sweep: every offset in the 0x4B-byte row that holds a pointer to a printable UTF-16 string.
+    var seenRows = new HashSet<long>();
+    foreach (var n in hos)
+    {
+        if (!reader.TryReadStruct<long>(n.Element + Poe2.AtlasNode.PlayerHideoutReward, out var row) || row == 0 || !seenRows.Add(row)) continue;
+        var parts = new List<string>();
+        for (var off = 0; off <= 0x4B - 8; off++)
+        {
+            if (!reader.TryReadStruct<long>((nint)(row + off), out var sp) || sp < 0x10000 || sp > 0x7FFFFFFFFFFF) continue;
+            var s = reader.ReadStringUtf16((nint)sp, 64);
+            if (s.Length >= 3 && s.All(c => c >= ' ' && c < 0x7F)) parts.Add($"+0x{off:X2}=\"{s}\"");
+        }
+        Console.WriteLine($"  row 0x{row:X}: {string.Join("  ", parts)}");
+    }
     return 0;
 }
 

@@ -63,6 +63,8 @@ public sealed class ApiServer : IDisposable
     // Atlas map-data provider (catalog + current-region map set). Read-only, computed on demand (it
     // scans memory + caches), returns a JSON-ready object. Null when atlas reading is unavailable.
     private readonly Func<object>? _atlas;
+    // Lightweight public player-hideout list (/api/atlas-hideouts) the dashboard polls while the Atlas tab is open.
+    private readonly Func<object>? _atlasHideouts;
     // Atlas node selection (element addresses) to highlight in-game; draw-only, loopback-gated.
     private readonly Action<IReadOnlyList<long>>? _atlasSelect;
     // Atlas highlight rules (tag + colour + track/arrow) — only matching nodes draw in-game; loopback-gated.
@@ -93,10 +95,12 @@ public sealed class ApiServer : IDisposable
         Action<IReadOnlyList<(string tag, string color, bool track, bool nav, bool arrow)>>? atlasHighlight = null,
         Func<object>? versionProvider = null,
         Func<object>? diagHealthProvider = null,
-        int port = 7777)
+        int port = 7777,
+        Func<object>? atlasHideoutsProvider = null)
     {
         _state = state;
         _atlas = atlasProvider;
+        _atlasHideouts = atlasHideoutsProvider;
         _atlasSelect = atlasSelect;
         _atlasHighlight = atlasHighlight;
         _version = versionProvider;
@@ -389,6 +393,12 @@ public sealed class ApiServer : IDisposable
                 Write(ctx, 200, JsonSerializer.Serialize(_atlas?.Invoke() ?? new { located = false, note = "atlas reader unavailable" }, Json));
                 break;
 
+            case "/api/atlas-hideouts":
+                // Public player hideouts on the open Atlas (owner / hideout map / reward / grid / fogged / matches
+                // the reward filter). Cheap subset of /api/atlas that the dashboard polls while its Atlas tab is up.
+                Write(ctx, 200, JsonSerializer.Serialize(_atlasHideouts?.Invoke() ?? new { open = false, list = Array.Empty<object>() }, Json));
+                break;
+
             case "/api/atlas-select":
             {
                 // Set which atlas nodes (by element address) to highlight in-game. Draw-only; loopback-gated.
@@ -543,6 +553,8 @@ public sealed class ApiServer : IDisposable
         atlasShowFogLabels = _settings.AtlasShowFogLabels,
         atlasShowRumours = _settings.AtlasShowRumours,
         atlasShowBoatLinks = _settings.AtlasShowBoatLinks,
+        atlasShowPlayerHideouts = _settings.AtlasShowPlayerHideouts,
+        atlasHideoutRewardFilter = _settings.AtlasHideoutRewardFilter,
         atlasRouteArrowSpacing = _settings.AtlasRouteArrowSpacing,
         atlasGroups = _settings.AtlasGroups,
     };
@@ -594,6 +606,10 @@ public sealed class ApiServer : IDisposable
                 case "atlasShowFogLabels" when TryBool(p.Value, out var b): _settings.AtlasShowFogLabels = b; applied.Add(p.Name); break;
                 case "atlasShowRumours" when TryBool(p.Value, out var b): _settings.AtlasShowRumours = b; applied.Add(p.Name); break;
                 case "atlasShowBoatLinks" when TryBool(p.Value, out var b): _settings.AtlasShowBoatLinks = b; applied.Add(p.Name); break;
+                case "atlasShowPlayerHideouts" when TryBool(p.Value, out var b): _settings.AtlasShowPlayerHideouts = b; applied.Add(p.Name); break;
+                case "atlasHideoutRewardFilter" when p.Value.ValueKind == JsonValueKind.String:
+                    { var hf = (p.Value.GetString() ?? "").Trim(); _settings.AtlasHideoutRewardFilter = hf.Length > 200 ? hf[..200] : hf; applied.Add(p.Name); }
+                    break;
                 case "atlasRouteArrowSpacing" when TryFloat(p.Value, out var f): _settings.AtlasRouteArrowSpacing = Math.Clamp(f, 1.5f, 18f); applied.Add(p.Name); break;
                 // Whole-object writes (the dashboard re-POSTs the full sub-object on edit). Parsed,
                 // sanitized/clamped, then swapped in. A malformed sub-object is skipped, not fatal.

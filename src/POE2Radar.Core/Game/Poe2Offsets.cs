@@ -629,6 +629,24 @@ public static class Poe2
         public const ushort RevealIdNone = 0xFFFF;
         public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
 
+        // ── Player Hideout nodes (0.5.5 "Archon of Corruption" supporter-pack beacon) ──────────────────
+        // Identified by the content tag "Player Hideout" (el+0x2F0 → *(+0) → UTF-16 "PlayerAtlasHideout";
+        // el+0x300 → +0 = the hideout area id, e.g. "HideoutSummit"). Plain claimable hideouts carry the tag
+        // "Hideout" instead and have none of the fields below. Only read for "Player Hideout" nodes.
+        public const string PlayerHideoutTag = "Player Hideout";
+        /// <summary>✓ live 2026-11-27 — inline MSVC <c>std::wstring</c> owner "Name#1234": 16-byte SSO buffer /
+        /// heap ptr, +0x10 size, +0x18 capacity (capacity ≥ 8 ⇒ heap ptr). Size seen as chars+1 — read
+        /// <c>size</c> chars and cut at the first NUL.</summary>
+        public const int PlayerHideoutOwner  = 0x3B0;
+        /// <summary>✓ live 2026-11-27 — pointer (NOT 8-aligned) to the reward row of a .dat table (row stride
+        /// 0x4B; el+0x3D8 = the dat table object). See <see cref="HideoutRewardRowId"/> / <see cref="HideoutRewardRowText"/>.</summary>
+        public const int PlayerHideoutReward = 0x3D0;
+        /// <summary>✓ live 2026-11-27 — reward row +0x00 → UTF-16 reward id ("CurrencyAddModToRarex20", "UniqueBelt").</summary>
+        public const int HideoutRewardRowId   = 0x00;
+        /// <summary>✓ live 2026-11-27 — reward row +0x1E → UTF-16 display text ("20x Exalted Orb", "Divine Orb").
+        /// (Inferred from one row, re-verified by Research <c>--player-hideouts</c>; falls back to the id.)</summary>
+        public const int HideoutRewardRowText = 0x1E;
+
         /// <summary>Alternate node-DATA model (GameHelper2): <c>*(*(node+0x10)+0x20)</c> → a struct with
         /// biome <c>+0x2CE</c> / status byte <c>+0x2CF</c> (bit0 accessible, bit1 completed) / mapId at
         /// <c>+0x2A0</c> (ptr→ptr→ptr→UTF-16 "MapXxx"). Validated live 2026-06-08 (biome matches the

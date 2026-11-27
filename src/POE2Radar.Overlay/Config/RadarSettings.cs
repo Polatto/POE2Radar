@@ -127,6 +127,12 @@ public sealed class RadarSettings
     // Boat -> islands: from each VISIBLE Expedition logbook boat on the atlas, draw a line to every UNREVEALED
     // island of its 16x16 grid block, labelled with the island's rumour. On by default.
     public bool AtlasShowBoatLinks { get; set; } = true;
+    // Public PLAYER hideouts (0.5.5 supporter-pack beacon, content tag "Player Hideout"): ring + "Owner · Reward"
+    // label (also on fogged nodes) + an off-screen arrow on every player hideout matching the reward filter.
+    public bool AtlasShowPlayerHideouts { get; set; } = true;
+    // Comma-separated, case-insensitive substrings matched against the reward display text + reward id + owner
+    // (e.g. "divine, exalted"). Empty = every player hideout.
+    public string AtlasHideoutRewardFilter { get; set; } = "";
     // Route chevron spacing (#4): gap between the directional arrowheads drawn along a route, as a multiple
     // of the chevron size (higher = more spread out). Mirrors the GameHelper2 Atlas plugin's RouteArrowSpacing.
     public float AtlasRouteArrowSpacing { get; set; } = 8f;

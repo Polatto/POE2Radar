@@ -278,8 +278,12 @@ public sealed class Poe2Atlas
         float X, float Y, float W, float H, float Scale, bool Visible, int IconType,
         int GridX, int GridY, string MapName, string MapCode, IReadOnlyList<string> Tags,
         bool Accessible, bool Completed, string Kind,
-        string MapType, string MapGroup, IReadOnlyList<string> MapDataTags, byte Status = 0, string Rumour = "", ushort RevealId = Poe2.AtlasNode.RevealIdNone)
+        string MapType, string MapGroup, IReadOnlyList<string> MapDataTags, byte Status = 0, string Rumour = "", ushort RevealId = Poe2.AtlasNode.RevealIdNone,
+        string? HideoutOwner = null, string? HideoutRewardId = null, string? HideoutReward = null)
     {
+        /// <summary>A public PLAYER hideout node (content tag "Player Hideout") — <see cref="HideoutOwner"/>/
+        /// <see cref="HideoutReward"/> are set (null on every other node, incl. plain "Hideout" nodes).</summary>
+        public bool IsPlayerHideout => HideoutOwner != null;
         /// <summary>Ever revealed (u16 reveal id at <see cref="Poe2Offsets.AtlasNode.RevealId"/> != 0xFFFF). An
         /// unrevealed node can still be fog-radius VISIBLE; an unrevealed Expedition island is a boat target.</summary>
         public bool Revealed => RevealId != Poe2.AtlasNode.RevealIdNone;
@@ -460,6 +464,13 @@ public sealed class Poe2Atlas
             outNodes.Add(new AtlasNodeLive(el, id, content, state, biome, flags, compl, x, y, w, h, scale, visible, iconType, gridX, gridY, resolved.map, resolved.code, resolved.content, accessible, completed, kind,
                 meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags, status, ReadRumour(el),
                 _reader.TryReadStruct<ushort>(el + Poe2.AtlasNode.RevealId, out var rid) ? rid : Poe2.AtlasNode.RevealIdNone));
+            // Public PLAYER hideout (supporter-pack beacon): owner + reward, read ONLY for nodes tagged
+            // "Player Hideout" (a handful) — plain claimable "Hideout" nodes don't carry these fields.
+            if (Array.IndexOf(resolved.content, Poe2.AtlasNode.PlayerHideoutTag) >= 0)
+            {
+                var (owner, rewardId, reward) = ReadPlayerHideout(el);
+                outNodes[^1] = outNodes[^1] with { HideoutOwner = owner, HideoutRewardId = rewardId, HideoutReward = reward };
+            }
         }
         if (matched < 8) { Invalidate(); return false; }          // canvas no longer the node container
         AllTagsResolved = allCached;   // true once every node's tags are cached (seed defaults only then)
@@ -485,6 +496,65 @@ public sealed class Poe2Atlas
         if (_rumourCache.Count > 4096) _rumourCache.Clear();
         _rumourCache[row] = rumour;
         return rumour;
+    }
+
+    // Hideout reward rows (static .dat data) keyed by ROW pointer → (id, display). Never re-read; survives Invalidate.
+    private readonly Dictionary<nint, (string id, string text)> _hideoutRewardCache = new();
+
+    /// <summary>A "Player Hideout" node's owner ("Name#1234", inline MSVC std::wstring at
+    /// <see cref="Poe2Offsets.AtlasNode.PlayerHideoutOwner"/>) and reward (row ptr at
+    /// <see cref="Poe2Offsets.AtlasNode.PlayerHideoutReward"/> → id +0x00 / display +0x1E). ✓ live 2026-11-27.
+    /// Owner is "" (never null) when unreadable so the node still counts as a player hideout; reward text falls
+    /// back to the id. Caller holds <c>_nodeLock</c>.</summary>
+    private (string owner, string? rewardId, string? reward) ReadPlayerHideout(nint el)
+    {
+        var owner = ReadStdWString(el + Poe2.AtlasNode.PlayerHideoutOwner, 48);
+        if (!IsPrintable(owner)) owner = "";
+        string? rid = null, txt = null;
+        var row = Ptr(el + Poe2.AtlasNode.PlayerHideoutReward);   // unaligned row pointer — RPM doesn't care
+        if (row != 0)
+        {
+            if (!_hideoutRewardCache.TryGetValue(row, out var rw))
+            {
+                rw = (RowStr(row, Poe2.AtlasNode.HideoutRewardRowId), RowStr(row, Poe2.AtlasNode.HideoutRewardRowText));
+                if (_hideoutRewardCache.Count > 1024) _hideoutRewardCache.Clear();
+                if (rw.id.Length > 0 || rw.text.Length > 0) _hideoutRewardCache[row] = rw;   // don't cache a failed read
+            }
+            rid = rw.id.Length > 0 ? rw.id : null;
+            txt = rw.text.Length > 0 ? rw.text : rid;
+        }
+        return (owner, rid, txt);
+    }
+
+    private string RowStr(nint row, int off)
+    {
+        var sp = Ptr(row + off);
+        var v = sp != 0 ? _reader.ReadStringUtf16(sp, 96) : "";
+        return v.Length is >= 2 and <= 95 && IsPrintable(v) ? v.Trim() : "";
+    }
+
+    /// <summary>Read an inline MSVC <c>std::wstring</c> at <paramref name="addr"/>: 16-byte SSO buffer / heap ptr,
+    /// +0x10 size, +0x18 capacity (capacity ≥ 8 ⇒ heap). Reads <c>size</c> chars and cuts at the first NUL.</summary>
+    private string ReadStdWString(nint addr, int maxChars)
+    {
+        Span<byte> b = stackalloc byte[0x20];
+        if (_reader.TryReadBytes(addr, b) < 0x20) return "";
+        var size = BitConverter.ToInt64(b[0x10..]);
+        var cap = BitConverter.ToInt64(b[0x18..]);
+        if (size <= 0 || size > maxChars || cap < size - 1 || cap > 0x10000) return "";
+        string s;
+        if (cap >= 8)
+        {
+            var p = (nint)BitConverter.ToInt64(b);
+            if (!IsCanon(p)) return "";
+            s = _reader.ReadStringUtf16(p, (int)size);   // cuts at the first NUL
+        }
+        else
+        {
+            s = System.Text.Encoding.Unicode.GetString(b[..((int)Math.Min(size, 8) * 2)]);
+            var z = s.IndexOf('\0'); if (z >= 0) s = s[..z];
+        }
+        return s.Trim();
     }
 
     private static bool IsPrintable(string s)
