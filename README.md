@@ -18,7 +18,12 @@ the `upstream` remote. Releases linked below are this fork's own builds (startin
 include the changes listed here; the in-app update check also points at this fork. Everything added
 stays read-only: nothing in this fork writes to game memory.
 
+- Built-in **Map Boss** marker: endgame maps mark their boss arena tile as soon as the map loads (toggle in the dashboard).
+
 Fixes and additions so far:
+
+- **Island rumour filter** — dashboard Atlas → Expeditions → Rumours: tick which Expedition island rumours show (labels and boat → island lines); unticked ones are hidden.
+- **Rumour arrows + island-aware map rules** — the ➤ toggle on a rumour rings every unrevealed island with that rumour and points an off-screen arrow at it (off by default). Expedition islands are told apart from same-named normal maps (by the island rumour on their EndgameMaps row): plain map-name rules now match normal maps only; target islands with `Island:<name>` (Maps table rows "… (island)") or the `Expedition Island` kind.
 
 - **Offsets for the 2026-11-18 patch** — recovered and re-validated (`Game/Poe2Offsets.cs`),
   including the atlas node's EndgameMaps row and its rumour field.
@@ -47,6 +52,34 @@ Fixes and additions so far:
   `--ui-strings-diff`, `--atlas-nav-debug "<tag>"` (explains why a target is or isn't routed) and
   `--boat-dump` (Expedition logbook boats — region action buttons and the 16×16 grid block each one
   reveals) and `--player-hideouts` (owner/reward of every public player hideout node).
+- **Toggle all display rules** — one *All rules enabled* switch on the dashboard Rules tab turns every
+  display rule on or off at once (saved like any rule edit).
+- **Navigation respects the display rules** — an entity or landmark the rules hide (rule disabled, Hide
+  rule, junk) is no longer an auto-path / F6 / nav-menu target, and an existing route to it is dropped
+  as soon as its rule is turned off (e.g. disable the Breach rule → no more path to the Breach).
+- **Atlas "Nearest only"** — Atlas tab toggle that auto-routes only to the single nearest tracked map
+  (fewest hops) instead of to every match. The routed target's ring and off-screen arrow are drawn
+  larger with a white halo (arrow labelled "ROUTE: …"); the other Nav targets are dimmed.
+- **Atlas sub-tabs** — the dashboard Atlas tab is split into *Maps*, *Expeditions* and *Player
+  Hideouts* (the chosen sub-tab is remembered). The hideout table no longer jumps back to the top on
+  its 3-second refresh (it only re-renders when the data changes and keeps scroll and focus).
+- **Price unit** — *Value unit* (Auto / Exalted / Divine) in the dashboard Item Value → On Hover card,
+  applied to every price chip (hover, loot tags, ground labels, ritual, runeforge). Auto keeps the old
+  behaviour (div from 1 div up, else ex). **F11** in-game cycles the unit with a short on-screen notice
+  (`hoverPrice.unitHotkey` in the config, 0 = off).
+- **No duplicate Ritual value** — the hover price chip is hidden while hovering a Ritual tribute tile
+  that already shows its own value chip (*Hide on Ritual tiles*, on by default).
+- **Atlas fog radius** — *Fog radius (hops)* limits fog labels, island rumours and fogged content icons
+  to fogged maps within N hops of a map you can run now (0 = every fogged map, the old behaviour).
+- **Player hideout picker** — the *Player hideouts* toggle now fully controls hideout markers (ring,
+  label, off-screen arrow and any route; a Nav/Arrow rule can't bring them back while it's off). The
+  hideout table is only shown while the toggle is on and has a checkbox per hideout (plus all/none):
+  unchecked hideouts get no ring, label, arrow or route. Picks are saved per owner; new hideouts start
+  checked when they match the reward filter.
+- **Always mark rares & bosses** — rare and unique monsters stay on the map even when no rule draws
+  them (falling back to the Monster · Rare / Unique icon); uniques get a double boss ring, and a rare
+  restyled by another rule (e.g. a mechanic rule) gets a ring. Settings → Radar Display toggle
+  *Always mark rares & bosses* (on by default; a Hide rule still wins).
 
 ## Features
 

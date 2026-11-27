@@ -141,6 +141,7 @@ public sealed class OverlayRenderer : IDisposable
                 DrawMonolithPanel(rt, ctx);            // nearby-monolith reward list (screen-space)
                 DrawCurrencyExchange(rt, ctx);         // currency-exchange order-book depth panel (top-right, screen-space)
             }
+            if (ctx.Active && ctx.Toast is { Length: > 0 } toast) DrawToast(rt, ctx, toast);
         }
         finally { rt.EndDraw(); }
         _window.Present();
@@ -225,9 +226,12 @@ public sealed class OverlayRenderer : IDisposable
                 var tgt = pts[^1];
                 if (On(tgt, 0f))
                 {
+                    // Left of the node, clear of the largest ring (Nearest-only focus ring + halo ≈ 20 px) and
+                    // mirroring the map-name chip on the right — above the node it was cut by the focus ring.
                     string ht = ar.Hops.ToString();
-                    rt.FillRectangle(new Vortice.RawRectF(tgt.X - 11f, tgt.Y - 26f, tgt.X + 11f, tgt.Y - 10f), _bPanel!);
-                    rt.DrawText(ht, _tf!, new Rect(tgt.X - 9f, tgt.Y - 26f, tgt.X + 11f, tgt.Y - 10f), _bText!, DrawTextOptions.Clip);
+                    float hw = ht.Length * 7.0f + 10f, hr = tgt.X - 24f;
+                    rt.FillRectangle(new Vortice.RawRectF(hr - hw, tgt.Y - 9f, hr, tgt.Y + 8f), _bPanel!);
+                    rt.DrawText(ht, _tf!, new Rect(hr - hw + 4f, tgt.Y - 9f, hr + 2f, tgt.Y + 8f), _bText!, DrawTextOptions.Clip);
                 }
             }
         }
@@ -369,11 +373,16 @@ public sealed class OverlayRenderer : IDisposable
             var sy = (h3 * n.X + h4 * n.Y + h5) / w;
             var onScreen = sx >= 0 && sx <= W && sy >= 0 && sy <= H;
             var col = string.IsNullOrEmpty(n.Color) ? new Color4(0.235f, 0.86f, 1f, 1f) : ParseColor(n.Color, 1f);
+            // Nearest-only focus: the routed target is drawn larger with a white halo; the other (un-routed)
+            // Nav targets are dimmed so it's obvious which one the single route leads to.
+            var dim = n.Focus == 2;
+            var focus = n.Focus == 1;
+            if (dim) col = new Color4(col.R, col.G, col.B, 0.32f);
 
             // OFF-SCREEN: if this map has the arrow rule, draw an edge arrow pointing toward it; else skip.
             if (!onScreen)
             {
-                if (n.Arrow) DrawAtlasArrow(rt, sx, sy, ccx, ccy, W, H, col, n.Label);
+                if (n.Arrow || focus) DrawAtlasArrow(rt, sx, sy, ccx, ccy, W, H, col, n.Label, n.Focus);
                 continue;
             }
 
@@ -384,9 +393,14 @@ public sealed class OverlayRenderer : IDisposable
                 // Biome (when enabled) is conveyed by the CENTRE-DOT colour rather than a second full ring,
                 // so a tracked node reads as a single target instead of a stack of concentric rings. Primary
                 // targets (ring/arrow rules) are drawn a touch larger than nav-only route endpoints.
-                var r = (n.Selected || n.Arrow) ? 12f : 9f;
+                var r = focus ? 16f : dim ? 8f : (n.Selected || n.Arrow) ? 12f : 9f;
+                if (focus)
+                {
+                    _bStyle!.Color = new Color4(1f, 1f, 1f, 0.9f);
+                    rt.DrawEllipse(new Ellipse(c, r + 3.5f, r + 3.5f), _bStyle, 1.5f);
+                }
                 _bStyle!.Color = col;
-                rt.DrawEllipse(new Ellipse(c, r, r), _bStyle, 2.5f);
+                rt.DrawEllipse(new Ellipse(c, r, r), _bStyle, focus ? 4f : dim ? 1.5f : 2.5f);
                 _bStyle.Color = ctx.AtlasBiomeBorder ? BiomeColor(n.Biome) : col;
                 rt.FillEllipse(new Ellipse(c, 3f, 3f), _bStyle);
             }
@@ -529,7 +543,9 @@ public sealed class OverlayRenderer : IDisposable
     /// <summary>Draw an edge arrow pointing from screen-centre toward an OFF-SCREEN atlas map (sx,sy), so
     /// you can pan toward high-value maps you can't zoom out far enough to see. Clamped to a screen-edge
     /// inset, coloured by the rule, labelled with the map/content.</summary>
-    private void DrawAtlasArrow(ID2D1RenderTarget rt, float sx, float sy, float cx, float cy, float W, float H, Color4 col, string? label)
+    /// <para><paramref name="focus"/> (Nearest only): 1 = the routed target (1.6× arrow, white halo, "ROUTE"
+    /// label), 2 = an un-routed Nav target (small, translucent — col already carries the low alpha — no label).</para>
+    private void DrawAtlasArrow(ID2D1RenderTarget rt, float sx, float sy, float cx, float cy, float W, float H, Color4 col, string? label, int focus = 0)
     {
         float dx = sx - cx, dy = sy - cy;
         float len = MathF.Sqrt(dx * dx + dy * dy); if (len < 1f) return;
@@ -540,13 +556,24 @@ public sealed class OverlayRenderer : IDisposable
         float t = MathF.Min(tX, tY);
         float ex = cx + ux * t, ey = cy + uy * t;     // point on the inset screen edge
         float px = -uy, py = ux;                       // perpendicular
-        var tip = new NumVec2(ex + ux * 11f, ey + uy * 11f);
-        var bl = new NumVec2(ex - ux * 9f + px * 10f, ey - uy * 9f + py * 10f);
-        var br = new NumVec2(ex - ux * 9f - px * 10f, ey - uy * 9f - py * 10f);
+        float k = focus == 1 ? 1.6f : focus == 2 ? 0.65f : 1f;   // arrowhead scale
+        var tip = new NumVec2(ex + ux * 11f * k, ey + uy * 11f * k);
+        var bl = new NumVec2(ex - ux * 9f * k + px * 10f * k, ey - uy * 9f * k + py * 10f * k);
+        var br = new NumVec2(ex - ux * 9f * k - px * 10f * k, ey - uy * 9f * k - py * 10f * k);
+        float thick = focus == 1 ? 5f : focus == 2 ? 2.5f : 4f;
+        if (focus == 1)
+        {
+            _bStyle!.Color = new Color4(1f, 1f, 1f, 0.85f);   // white halo under the routed arrow
+            rt.DrawLine(tip, bl, _bStyle, thick + 3f);
+            rt.DrawLine(tip, br, _bStyle, thick + 3f);
+            rt.DrawLine(bl, br, _bStyle, thick + 3f);
+        }
         _bStyle!.Color = col;
-        rt.DrawLine(tip, bl, _bStyle, 4f);
-        rt.DrawLine(tip, br, _bStyle, 4f);
-        rt.DrawLine(bl, br, _bStyle, 4f);              // close the arrowhead triangle
+        rt.DrawLine(tip, bl, _bStyle, thick);
+        rt.DrawLine(tip, br, _bStyle, thick);
+        rt.DrawLine(bl, br, _bStyle, thick);           // close the arrowhead triangle
+        if (focus == 2) return;                        // dimmed: no label chip (declutter)
+        if (focus == 1 && label != null) label = "ROUTE: " + label;
         if (label != null)
         {
             // Pull the label fully on-screen (inset from the arrow toward centre) and back it with a chip so
@@ -749,6 +776,21 @@ public sealed class OverlayRenderer : IDisposable
         rt.DrawText(hp.Text, _tf!, new Rect(x + pad, y + 3f, x + w - pad, y + rowH + 3f), _bStyle, DrawTextOptions.Clip);
         if (twoRow)
             rt.DrawText(hp.Sub, _tf!, new Rect(x + pad, y + rowH + 3f, x + w - pad, y + chipH - 2f), _bText!, DrawTextOptions.Clip);
+    }
+
+    /// <summary>Brief centred notice near the top of the screen (e.g. "Price unit: Divine" after the unit
+    /// hotkey). RadarApp passes it only for ~1.6 s after the event.</summary>
+    private void DrawToast(ID2D1RenderTarget rt, RenderContext ctx, string text)
+    {
+        const float h = 24f, charW = 7.3f, pad = 12f;
+        var w = text.Length * charW + 2f * pad;
+        var x = ctx.WindowWidth * 0.5f - w * 0.5f;
+        var y = ctx.WindowHeight * 0.12f;
+        var box = new Vortice.RawRectF(x, y, x + w, y + h);
+        rt.FillRectangle(box, _bPanel!);
+        _bStyle!.Color = ColItemHi;
+        rt.DrawRectangle(box, _bStyle, 1.5f);
+        rt.DrawText(text, _tf!, new Rect(x + pad, y + 4f, w, h - 4f), _bStyle, DrawTextOptions.Clip);
     }
 
     /// <summary>Unpack a 0xAARRGGBB color (precomputed in RadarApp.BuildHpSpecs) to a Color4 — no string
@@ -1118,13 +1160,39 @@ public sealed class OverlayRenderer : IDisposable
             if (ctx.HideJunk && JunkFilter.IsJunk(e.Metadata)) continue;
 
             var rule = ctx.Resolve?.Invoke(e);
-            if (rule is null || rule.Hide) continue;
+            if (rule is { Hide: true }) continue;
+            // AlwaysMarkRareUnique: alive hostile rares/uniques stay marked even when no enabled rule draws them.
+            var rareMark = ctx.MarkRareUnique && Web.DisplayRules.IsRareOrUniqueMonster(e);
+            if (rule is null && !rareMark) continue;
 
             var p = Project(new NumVec2(e.Grid.X, e.Grid.Y), player, center, scale);
-            _bStyle!.Color = ParseColor(rule.Color, rule.Opacity);
-            DrawIcon(rt, rule.Shape, p, rule.Size, _bStyle, filled: true);
-            if (!string.IsNullOrEmpty(rule.Label))
-                rt.DrawText(rule.Label, _tf!, new Rect(p.X + 7, p.Y - 7, p.X + 240, p.Y + 9), _bStyle, DrawTextOptions.Clip);
+            var isUnique = e.Rarity == Poe2Live.Rarity.Unique;
+            if (rule is null)
+            {
+                // Fallback: the Monster·Rare / Monster·Unique icon style (its Enabled flag ignored — "always").
+                var st = isUnique ? ctx.Styles.MonsterUnique : ctx.Styles.MonsterRare;
+                _bStyle!.Color = ParseColor(st.Color, Math.Max(st.Opacity, 0.85f));
+                DrawIcon(rt, st.Shape, p, st.Size, _bStyle, filled: true);
+            }
+            else
+            {
+                _bStyle!.Color = ParseColor(rule.Color, rule.Opacity);
+                DrawIcon(rt, rule.Shape, p, rule.Size, _bStyle, filled: true);
+                if (!string.IsNullOrEmpty(rule.Label))
+                    rt.DrawText(rule.Label, _tf!, new Rect(p.X + 7, p.Y - 7, p.X + 240, p.Y + 9), _bStyle, DrawTextOptions.Clip);
+            }
+            // Rarity ring: always on uniques (boss marker), and on rares restyled by a non-rarity rule (e.g. a
+            // mechanic rule) so a rare never looks like a plain mob. Colour = the Monster·Rare/Unique style colour.
+            if (rareMark && (isUnique || (rule != null && string.IsNullOrEmpty(rule.Rarity))))
+            {
+                var st = isUnique ? ctx.Styles.MonsterUnique : ctx.Styles.MonsterRare;
+                var rad = (rule?.Size ?? st.Size) + 3f;
+                _bStyle!.Color = new Color4(0f, 0f, 0f, 0.6f);
+                rt.DrawEllipse(new Ellipse(p, rad, rad), _bStyle, 3.2f);
+                _bStyle.Color = ParseColor(st.Color, 1f);
+                rt.DrawEllipse(new Ellipse(p, rad, rad), _bStyle, 1.8f);
+                if (isUnique) rt.DrawEllipse(new Ellipse(p, rad + 3.5f, rad + 3.5f), _bStyle, 1.4f);
+            }
         }
 
         // Static tile landmarks (boss arena, treasure, …). Each is styled by its matching "Tile"

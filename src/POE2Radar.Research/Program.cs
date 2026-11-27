@@ -234,6 +234,9 @@ if (HasFlag(args, "--mouseover"))
         TryGetHexArg(args, "--h") ?? Poe2.MouseOver.HostFromInGameState, TryGetHexArg(args, "--s") ?? Poe2.MouseOver.SubFromHost, TryGetHexArg(args, "--e") ?? Poe2.MouseOver.EntityFromSub,
         HasFlag(args, "--scan"), HasFlag(args, "--hunt"));
 
+if (HasFlag(args, "--hover-diag"))
+    return POE2Radar.Research.HoverDiag.Run(process, reader, TryGetIntArg(args, "--watch") ?? 0, (int)(TryGetHexArg(args, "--slot") ?? Poe2.Ritual.TileSlotItem));
+
 if (HasFlag(args, "--itemhover"))
     return RunItemHover(process, reader, TryGetIntArg(args, "--secs") ?? 25);
 
@@ -277,6 +280,9 @@ if (TryGetStrArg(args, "--lootwatch") is { } lootWatchName)
 
 if (HasFlag(args, "--watch"))
     return RunWatch(process, reader);
+
+if (HasFlag(args, "--map-boss-scan"))
+    return POE2Radar.Research.MapBossScan.Run(process, reader, TryGetStrArg(args, "--needle"));
 
 if (TryGetStrArg(args, "--tile-find") is { } tileNeedle)
     return RunTileFind(process, reader, tileNeedle);
@@ -475,6 +481,44 @@ if (HasFlag(args, "--atlas-rumours"))
     Console.WriteLine($"nodes={rn.Count} withRumour={withR.Count} fogged={withR.Count(n => !n.Visible)} visible={withR.Count(n => n.Visible)} allTags={atlasR.AllTagsResolved}");
     foreach (var g in withR.GroupBy(n => n.Rumour).OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal))
         Console.WriteLine($"  {g.Count(),3}  (fogged {g.Count(n => !n.Visible),3})  \"{g.Key}\"");
+    return 0;
+}
+
+// --atlas-islands: tell Expedition islands from same-named normal maps. Per node: EndgameMaps row id (el+0x2F0
+// → row+0 → UTF-16), WorldAreas id (el+0x300 → +0), rumour, revealed/visible, IsExpeditionIsland, and whether the
+// +0x360 (statId,value) vector holds stat 0x3411. Then lists every map NAME carried by both islands and non-islands.
+if (HasFlag(args, "--atlas-islands"))
+{
+    var (_, igsI, _, _) = ResolveChain(process, reader);
+    if (igsI == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var atlasI = new POE2Radar.Core.Game.Poe2Atlas(reader);
+    var nodesI = atlasI.ReadNodes(igsI);
+    for (var w = 0; nodesI.Count == 0 && w < 30; w++) { Thread.Sleep(100); nodesI = atlasI.ReadNodes(igsI); }
+    for (var w = 0; !atlasI.AllTagsResolved && w < 80; w++) { Thread.Sleep(50); nodesI = atlasI.ReadNodes(igsI); }
+    if (nodesI.Count == 0) { Console.Error.WriteLine("no atlas nodes (is the Atlas open?)"); return 1; }
+    string Str(nint p) => p == 0 ? "" : reader.ReadStringUtf16(p, 64);
+    bool Has3411(nint el)
+    {
+        if (!reader.TryReadStruct<nint>(el + 0x360, out var b) || !reader.TryReadStruct<nint>(el + 0x368, out var e)) return false;
+        var len = (long)e - (long)b; if (b == 0 || len <= 0 || len > 0x800) return false;
+        var buf = new byte[len]; if (reader.TryReadBytes(b, buf.AsSpan()) < len) return false;
+        for (var o = 0; o + 8 <= len; o += 8) if (BitConverter.ToInt32(buf, o) == 0x3411) return true;
+        return false;
+    }
+    var rowsI = nodesI.Select(n => new
+    {
+        N = n,
+        RowId = n.EndgameRowId,
+        AreaId = Str(SafePtr(reader, SafePtr(reader, n.Element + Poe2.AtlasNode.MapNodeId))),
+        S3411 = Has3411(n.Element),
+    }).ToList();
+    foreach (var g in rowsI.GroupBy(r => (r.N.IsExpeditionIsland, Pre: r.RowId.Split('_')[0])).OrderBy(g => g.Key.IsExpeditionIsland).ThenBy(g => g.Key.Pre))
+        Console.WriteLine($"  island={(g.Key.IsExpeditionIsland ? 1 : 0)} rowIdPrefix={g.Key.Pre,-28} n={g.Count(),4} rumour={g.Count(r => r.N.Rumour.Length > 0),4} s3411={g.Count(r => r.S3411),4} revealed={g.Count(r => r.N.Revealed),4} visible={g.Count(r => r.N.Visible),4}  e.g. {g.First().RowId} / {g.First().AreaId} / {g.First().N.MapName}");
+    Console.WriteLine("-- map names shared by islands and non-islands:");
+    foreach (var g in rowsI.Where(r => r.N.MapName.Length > 0).GroupBy(r => r.N.MapName).Where(g => g.Any(r => r.N.IsExpeditionIsland) && g.Any(r => !r.N.IsExpeditionIsland)))
+        foreach (var r in g.OrderBy(r => r.N.IsExpeditionIsland).Take(6))
+            Console.WriteLine($"  {g.Key,-26} island={(r.N.IsExpeditionIsland ? 1 : 0)} ({r.N.GridX,4},{r.N.GridY,4}) row={r.RowId,-36} area={r.AreaId,-30} code={r.N.MapCode,-24} s3411={(r.S3411 ? 1 : 0)} rev={(r.N.Revealed ? 1 : 0)} vis={(r.N.Visible ? 1 : 0)} rumour=\"{r.N.Rumour}\"");
+    Console.WriteLine($"nodes={nodesI.Count} islands={nodesI.Count(n => n.IsExpeditionIsland)} expeditionArea={nodesI.Count(n => n.IsExpeditionArea)} rowIdResolved={nodesI.Count(n => n.EndgameRowId.Length > 0)} withRumour={nodesI.Count(n => n.Rumour.Length > 0)} allTags={atlasI.AllTagsResolved}");
     return 0;
 }
 
@@ -4937,7 +4981,7 @@ static int RunItemHover(ProcessHandle process, MemoryReader reader, int secs)
     var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     if (uiRoot == 0) { Console.Error.WriteLine("no UiRoot."); return 1; }
 
-    const int SlotItemOff = 0x4F8; // item-slot UiElement → item entity (flask bar / ritual tiles)
+    const int SlotItemOff = 0x4E0; // item-slot UiElement → item entity (flask bar / ritual tiles)
     const uint VisMask = 1u << Poe2.UiElement.FlagVisibleBit;
 
     // Resolve a qword to a Metadata/Items entity — directly, or via one dereference.

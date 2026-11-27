@@ -279,8 +279,27 @@ public sealed class Poe2Atlas
         int GridX, int GridY, string MapName, string MapCode, IReadOnlyList<string> Tags,
         bool Accessible, bool Completed, string Kind,
         string MapType, string MapGroup, IReadOnlyList<string> MapDataTags, byte Status = 0, string Rumour = "", ushort RevealId = Poe2.AtlasNode.RevealIdNone,
-        string? HideoutOwner = null, string? HideoutRewardId = null, string? HideoutReward = null)
+        string? HideoutOwner = null, string? HideoutRewardId = null, string? HideoutReward = null, string EndgameRowId = "")
     {
+        /// <summary>An Expedition OCEAN ISLAND node (not a normal map that merely shares its display name). Signal: the
+        /// node's EndgameMaps row (el+<see cref="Poe2Offsets.AtlasNode.EndgameMapRow"/>) carries an island rumour
+        /// (row+<see cref="Poe2Offsets.AtlasMapRow.Rumour"/>) — ✓ live 2026-11-27 (--atlas-islands): 646/646 rumour
+        /// nodes, every "Expedition…" area id among them, fogged AND revealed; 0 of 3896 other nodes. Islands also
+        /// include ocean-only uniques (MapUniqueCastaway, MapUberBoss_JadeCitadel, …), so the area id alone isn't
+        /// enough; "Expedition…" ids are kept as a fallback in case a rumour string fails to read.</summary>
+        public bool IsExpeditionIsland => Rumour.Length > 0 || EndgameRowId.StartsWith("Expedition", StringComparison.OrdinalIgnoreCase);
+        /// <summary>An Expedition island whose area is an Expedition area ("ExpeditionLogBook_*"/"ExpeditionSubArea_*"),
+        /// i.e. NOT one of the ocean-only unique maps ("MapUnique…", "MapUberBoss_JadeCitadel"). These are the nodes a
+        /// plain map-name rule does NOT match — they need an "Island:" rule (<see cref="RuleName"/>) or the
+        /// "Expedition Island" tag (see AtlasNav.Match).</summary>
+        public bool IsExpeditionArea => IsExpeditionIsland
+            && !EndgameRowId.StartsWith("Map", StringComparison.Ordinal) && !MapCode.StartsWith("Map", StringComparison.Ordinal);
+        /// <summary>The map-name rule key that targets this node: "Island:&lt;MapName&gt;" for an Expedition-area island,
+        /// else the plain <see cref="MapName"/>.</summary>
+        public string RuleName => IsExpeditionArea && MapName.Length > 0 ? AtlasIslandPrefix + MapName : MapName;
+        public const string AtlasIslandPrefix = "Island:";
+        /// <summary>Virtual tag matching every Expedition island (Highlight/Nav/Arrow rule "Expedition Island").</summary>
+        public const string ExpeditionIslandTag = "Expedition Island";
         /// <summary>A public PLAYER hideout node (content tag "Player Hideout") — <see cref="HideoutOwner"/>/
         /// <see cref="HideoutReward"/> are set (null on every other node, incl. plain "Hideout" nodes).</summary>
         public bool IsPlayerHideout => HideoutOwner != null;
@@ -319,7 +338,7 @@ public sealed class Poe2Atlas
     // Expedition "island rumour" per EndgameMaps row (el+AtlasNode.EndgameMapRow → row; row+AtlasMapRow.Rumour →
     // UTF-16). Rows are static dat data, so keyed by ROW pointer (not element) and never re-read; survives
     // Invalidate. Only ~174 rows exist; the size guard is a safety net against a garbage pointer flood.
-    private readonly Dictionary<nint, string> _rumourCache = new();
+    private readonly Dictionary<nint, (string Rumour, string RowId)> _rumourCache = new();
 
     // Atlas CONNECTION GRAPH (grid coord → neighbour grid coords), read from the canvas's edge vector
     // (Poe2.AtlasGraph.ConnectionsVec). Static while the atlas is open, so it's read once per canvas and
@@ -461,9 +480,11 @@ public sealed class Poe2Atlas
             }
             var kind = Classify(resolved.code);   // map-archetype class (Citadel/Boss/Tower/Unique/Merchant/Normal) — first-class track target
             var meta = resolved.meta;             // offline maps.json classification (type/group/tags); default when unmapped
+            var rumourRow = ReadRumour(el);
             outNodes.Add(new AtlasNodeLive(el, id, content, state, biome, flags, compl, x, y, w, h, scale, visible, iconType, gridX, gridY, resolved.map, resolved.code, resolved.content, accessible, completed, kind,
-                meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags, status, ReadRumour(el),
-                _reader.TryReadStruct<ushort>(el + Poe2.AtlasNode.RevealId, out var rid) ? rid : Poe2.AtlasNode.RevealIdNone));
+                meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags, status, rumourRow.Rumour,
+                _reader.TryReadStruct<ushort>(el + Poe2.AtlasNode.RevealId, out var rid) ? rid : Poe2.AtlasNode.RevealIdNone,
+                EndgameRowId: rumourRow.RowId));
             // Public PLAYER hideout (supporter-pack beacon): owner + reward, read ONLY for nodes tagged
             // "Player Hideout" (a handful) — plain claimable "Hideout" nodes don't carry these fields.
             if (Array.IndexOf(resolved.content, Poe2.AtlasNode.PlayerHideoutTag) >= 0)
@@ -481,10 +502,10 @@ public sealed class Poe2Atlas
     /// <summary>The node's Expedition "island rumour" ("Warm but risky...") or "" — el+0x2F0 → EndgameMaps row,
     /// row+0xE3 → UTF-16 (✓ live 2026-11-25). One pointer read per node per call; the string itself is read
     /// once per row and cached (rows are static). Caller holds <c>_nodeLock</c>.</summary>
-    private string ReadRumour(nint el)
+    private (string Rumour, string RowId) ReadRumour(nint el)
     {
         var row = Ptr(el + Poe2.AtlasNode.EndgameMapRow);
-        if (row == 0) return "";
+        if (row == 0) return ("", "");
         if (_rumourCache.TryGetValue(row, out var cached)) return cached;
         var rumour = "";
         var sp = Ptr(row + Poe2.AtlasMapRow.Rumour);          // packed/unaligned row field — RPM doesn't care
@@ -493,9 +514,14 @@ public sealed class Poe2Atlas
             var s = _reader.ReadStringUtf16(sp, 121);
             if (s.Length is >= 2 and <= 120 && IsPrintable(s)) rumour = s.Trim();
         }
+        // Row's first field → WorldAreas row → UTF-16 area Id (✓ live 2026-11-27, --atlas-islands: "ExpeditionLogBook_Prairie",
+        // "MapUniqueCastaway", "MapVaalFactory" — the same id as el+0x300; islands are NOT all "Expedition…").
+        var waRow = Ptr(row);
+        var idP = waRow != 0 ? Ptr(waRow) : 0;
+        var rowId = idP != 0 ? _reader.ReadStringUtf16(idP, 64) : "";
+        if (!LooksLikeName(rowId) || !IsPrintable(rowId)) rowId = "";
         if (_rumourCache.Count > 4096) _rumourCache.Clear();
-        _rumourCache[row] = rumour;
-        return rumour;
+        return _rumourCache[row] = (rumour, rowId);
     }
 
     // Hideout reward rows (static .dat data) keyed by ROW pointer → (id, display). Never re-read; survives Invalidate.
@@ -923,6 +949,34 @@ public sealed class Poe2Atlas
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>Multi-source BFS hop distance from <paramref name="sources"/> to every graph vertex within
+    /// <paramref name="maxHops"/> (sources = 0). Vertices farther away (or not in the graph) are absent. Used to
+    /// limit per-node work (fog labels) to the neighbourhood of the accessible frontier. Thread-safe (snapshots
+    /// the graph under <see cref="_nodeLock"/>).</summary>
+    public Dictionary<(int X, int Y), int> HopDistances(IReadOnlyCollection<(int, int)> sources, int maxHops)
+    {
+        var dist = new Dictionary<(int X, int Y), int>();
+        if (sources.Count == 0 || maxHops < 0) return dist;
+        Dictionary<(int, int), List<(int, int)>> g;
+        lock (_nodeLock)
+        {
+            if (_graph.Count == 0) return dist;
+            g = new Dictionary<(int, int), List<(int, int)>>(_graph);
+        }
+        var queue = new Queue<(int, int)>();
+        foreach (var s in sources)
+            if (g.ContainsKey(s) && dist.TryAdd(s, 0)) queue.Enqueue(s);
+        while (queue.Count > 0)
+        {
+            var cur = queue.Dequeue();
+            var d = dist[cur];
+            if (d >= maxHops || !g.TryGetValue(cur, out var nbrs)) continue;
+            foreach (var nb in nbrs)
+                if (dist.TryAdd(nb, d + 1)) queue.Enqueue(nb);
+        }
+        return dist;
     }
 
     /// <summary>Multi-source shortest-hop routing over the connection graph: one BFS seeded from every

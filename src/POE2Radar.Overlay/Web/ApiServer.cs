@@ -517,10 +517,12 @@ public sealed class ApiServer : IDisposable
         showPath = _settings.ShowPath,
         alwaysShowOverlay = _settings.AlwaysShowOverlay,
         useCuratedLandmarks = _settings.UseCuratedLandmarks,
+        mapBossLandmarks = _settings.MapBossLandmarks,
         landmarkClusterGap = _settings.LandmarkClusterGap,
         showMonsters = _settings.ShowMonsters,
         showTerrain = _settings.ShowTerrain,
         showPlayerBlip = _settings.ShowPlayerBlip,
+        alwaysMarkRareUnique = _settings.AlwaysMarkRareUnique,
         fpsCap = _settings.FpsCap,
         hpBarNormal = _settings.HpBarNormal,
         hpBarMagic = _settings.HpBarMagic,
@@ -555,6 +557,11 @@ public sealed class ApiServer : IDisposable
         atlasShowBoatLinks = _settings.AtlasShowBoatLinks,
         atlasShowPlayerHideouts = _settings.AtlasShowPlayerHideouts,
         atlasHideoutRewardFilter = _settings.AtlasHideoutRewardFilter,
+        atlasHideoutUnselected = _settings.AtlasHideoutUnselected ?? new List<string>(),
+        atlasRumourHidden = _settings.AtlasRumourHidden ?? new List<string>(),
+        atlasRumourArrows = _settings.AtlasRumourArrows ?? new List<string>(),
+        atlasNavNearestOnly = _settings.AtlasNavNearestOnly,
+        atlasFogLabelRadius = _settings.AtlasFogLabelRadius,
         atlasRouteArrowSpacing = _settings.AtlasRouteArrowSpacing,
         atlasGroups = _settings.AtlasGroups,
     };
@@ -576,6 +583,7 @@ public sealed class ApiServer : IDisposable
                 case "hideJunk" when TryBool(p.Value, out var b): _settings.HideJunk = b; applied.Add(p.Name); break;
                 case "showPath" when TryBool(p.Value, out var b): _settings.ShowPath = b; applied.Add(p.Name); break;
                 case "alwaysShowOverlay" when TryBool(p.Value, out var b): _settings.AlwaysShowOverlay = b; applied.Add(p.Name); break;
+                case "mapBossLandmarks" when TryBool(p.Value, out var mb): _settings.MapBossLandmarks = mb; applied.Add(p.Name); break;
                 case "useCuratedLandmarks" when TryBool(p.Value, out var b): _settings.UseCuratedLandmarks = b; applied.Add(p.Name); break;
                 case "landmarkClusterGap" when TryInt(p.Value, out var n): _settings.LandmarkClusterGap = Math.Clamp(n, 0, 64); applied.Add(p.Name); break;
                 case "scaleMul" when TryFloat(p.Value, out var f): _settings.ScaleMul = f; applied.Add(p.Name); break;
@@ -584,6 +592,7 @@ public sealed class ApiServer : IDisposable
                 case "showMonsters" when TryBool(p.Value, out var b): _settings.ShowMonsters = b; applied.Add(p.Name); break;
                 case "showTerrain" when TryBool(p.Value, out var b): _settings.ShowTerrain = b; applied.Add(p.Name); break;
                 case "showPlayerBlip" when TryBool(p.Value, out var b): _settings.ShowPlayerBlip = b; applied.Add(p.Name); break;
+                case "alwaysMarkRareUnique" when TryBool(p.Value, out var b): _settings.AlwaysMarkRareUnique = b; applied.Add(p.Name); break;
                 case "fpsCap" when TryInt(p.Value, out var n): _settings.FpsCap = Math.Clamp(n, 15, 360); applied.Add(p.Name); break;
                 case "hpBarNormal" when TryBool(p.Value, out var b): _settings.HpBarNormal = b; applied.Add(p.Name); break;
                 case "hpBarMagic" when TryBool(p.Value, out var b): _settings.HpBarMagic = b; applied.Add(p.Name); break;
@@ -610,6 +619,30 @@ public sealed class ApiServer : IDisposable
                 case "atlasHideoutRewardFilter" when p.Value.ValueKind == JsonValueKind.String:
                     { var hf = (p.Value.GetString() ?? "").Trim(); _settings.AtlasHideoutRewardFilter = hf.Length > 200 ? hf[..200] : hf; applied.Add(p.Name); }
                     break;
+                // Player-hideout table checkboxes: the dashboard re-POSTs the whole list of UNCHECKED keys.
+                case "atlasHideoutUnselected" when p.Value.ValueKind == JsonValueKind.Array:
+                    _settings.AtlasHideoutUnselected = p.Value.EnumerateArray()
+                        .Where(x => x.ValueKind == JsonValueKind.String)
+                        .Select(x => (x.GetString() ?? "").Trim()).Where(x => x.Length is > 0 and <= 100)
+                        .Distinct(StringComparer.Ordinal).Take(1000).ToList();
+                    applied.Add(p.Name);
+                    break;
+                case "atlasRumourHidden" when p.Value.ValueKind == JsonValueKind.Array:
+                    _settings.AtlasRumourHidden = p.Value.EnumerateArray()
+                        .Where(x => x.ValueKind == JsonValueKind.String)
+                        .Select(x => (x.GetString() ?? "").Trim()).Where(x => x.Length is > 0 and <= 200)
+                        .Distinct(StringComparer.OrdinalIgnoreCase).Take(500).ToList();
+                    applied.Add(p.Name);
+                    break;
+                case "atlasRumourArrows" when p.Value.ValueKind == JsonValueKind.Array:
+                    _settings.AtlasRumourArrows = p.Value.EnumerateArray()
+                        .Where(x => x.ValueKind == JsonValueKind.String)
+                        .Select(x => (x.GetString() ?? "").Trim()).Where(x => x.Length is > 0 and <= 200)
+                        .Distinct(StringComparer.OrdinalIgnoreCase).Take(500).ToList();
+                    applied.Add(p.Name);
+                    break;
+                case "atlasNavNearestOnly" when TryBool(p.Value, out var b): _settings.AtlasNavNearestOnly = b; applied.Add(p.Name); break;
+                case "atlasFogLabelRadius" when TryInt(p.Value, out var n): _settings.AtlasFogLabelRadius = Math.Clamp(n, 0, 100); applied.Add(p.Name); break;
                 case "atlasRouteArrowSpacing" when TryFloat(p.Value, out var f): _settings.AtlasRouteArrowSpacing = Math.Clamp(f, 1.5f, 18f); applied.Add(p.Name); break;
                 // Whole-object writes (the dashboard re-POSTs the full sub-object on edit). Parsed,
                 // sanitized/clamped, then swapped in. A malformed sub-object is skipped, not fatal.
@@ -821,6 +854,8 @@ public sealed class ApiServer : IDisposable
             var parsed = JsonSerializer.Deserialize<HoverPriceSettings>(el.GetRawText(), Json);
             if (parsed == null) return false;
             parsed.HighlightMinEx = Math.Max(0, parsed.HighlightMinEx);
+            parsed.PriceUnit = Pricing.PriceBook.NormalizeUnit(parsed.PriceUnit);
+            if (parsed.UnitHotkey < 0 || parsed.UnitHotkey > 0xFE) parsed.UnitHotkey = 0x7A;
             h = parsed;
             return true;
         }

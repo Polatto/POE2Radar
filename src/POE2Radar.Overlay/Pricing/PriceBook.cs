@@ -162,11 +162,37 @@ public sealed class PriceBook
             ? new PriceResult(p.Name, p.Exalted, p.Quantity, p.Category) : null;
     }
 
-    /// <summary>Convert an Exalted value to a short display string in the largest sensible unit.</summary>
+    /// <summary>Display unit for <see cref="Format"/>: "Auto" (div when ≥ 1 div, else ex — the original
+    /// behaviour), "Exalted" (always ex) or "Divine" (always div). Set from <c>HoverPrice.PriceUnit</c> each
+    /// world tick; shared by every price chip (hover, loot tags, ground labels, ritual, runeforge).</summary>
+    public volatile string Unit = "Auto";
+
+    /// <summary>The supported <see cref="Unit"/> values, in hotkey cycle order.</summary>
+    public static readonly string[] Units = { "Auto", "Exalted", "Divine" };
+
+    /// <summary>Normalize a unit string to one of <see cref="Units"/> (unknown → "Auto").</summary>
+    public static string NormalizeUnit(string? u)
+    {
+        foreach (var x in Units) if (string.Equals(x, u?.Trim(), StringComparison.OrdinalIgnoreCase)) return x;
+        return "Auto";
+    }
+
+    /// <summary>Convert an Exalted value to a short display string in the configured <see cref="Unit"/>
+    /// (Auto = the largest sensible unit). Divine needs a known Ex/Div rate; without one it falls back to ex.</summary>
     public string Format(double ex)
     {
-        if (ExPerDivine > 1 && ex >= ExPerDivine) return $"{ex / ExPerDivine:0.##} div";
-        return $"{ex:0.##} ex";
+        var unit = Unit;
+        var haveRate = ExPerDivine > 1;
+        if (unit == "Divine" && haveRate)
+        {
+            var d = ex / ExPerDivine;
+            if (d >= 10) return $"{d:0.#} div";
+            if (d >= 1) return $"{d:0.##} div";
+            if (d >= 0.001) return $"{d:0.###} div";
+            return "<0.001 div";
+        }
+        if (unit != "Exalted" && haveRate && ex >= ExPerDivine) return $"{ex / ExPerDivine:0.##} div";
+        return ex >= 1000 ? $"{ex:0} ex" : $"{ex:0.##} ex";
     }
 
     // ── fetch ────────────────────────────────────────────────────────────────

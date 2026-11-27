@@ -14,6 +14,7 @@ public sealed class RadarSettings
     public bool HideJunk { get; set; } = false;
     public bool ShowPath { get; set; } = false;
     public bool UseCuratedLandmarks { get; set; } = true;
+    public bool MapBossLandmarks { get; set; } = true;
     public bool DrawAllLandmarkPaths { get; set; } = false;
 
     // ── Landmark clustering. A reusable tile (e.g. a "stairs up" wall piece) recurs in several
@@ -29,6 +30,11 @@ public sealed class RadarSettings
     public bool ShowTerrain { get; set; } = true;
     // The player position blip at map-center. Default on (prior behavior); some prefer it off.
     public bool ShowPlayerBlip { get; set; } = true;
+    // Always mark alive hostile RARE and UNIQUE (boss) monsters on the map: one with no enabled display rule
+    // still draws with the Monster·Rare / Monster·Unique icon style, and one restyled by a non-rarity rule
+    // (e.g. a mechanic rule) gets a rarity-coloured ring (double ring for uniques) so it stays distinct.
+    // An explicit Hide rule still wins. On by default.
+    public bool AlwaysMarkRareUnique { get; set; } = true;
 
     // ── Overlay render/present rate (Hz). The overlay redraws + UpdateLayeredWindow-blits at this
     //    rate; lower = less CPU/GPU tax on the game (the blit cost is proportional to resolution).
@@ -133,6 +139,26 @@ public sealed class RadarSettings
     // Comma-separated, case-insensitive substrings matched against the reward display text + reward id + owner
     // (e.g. "divine, exalted"). Empty = every player hideout.
     public string AtlasHideoutRewardFilter { get; set; } = "";
+    // Player hideouts the user UNCHECKED in the dashboard table (key = owner "Name#1234", or "@x,y" when the
+    // owner is unknown). Unchecked hideouts get no ring/label/arrow/route. A newly seen hideout is not in the
+    // list ⇒ selected (when it matches the reward filter), so the checkboxes only narrow the filter.
+    public List<string> AtlasHideoutUnselected { get; set; } = new();
+    // Expedition island rumours the user UNCHECKED in the dashboard (exact text, case-insensitive): no island
+    // rumour label and no boat -> island line/label for those islands.
+    public List<string> AtlasRumourHidden { get; set; } = new();
+    // Expedition island rumours the user ticked "arrow" for (exact text, case-insensitive): every UNREVEALED island
+    // carrying one gets an on-screen ring + off-screen edge arrow labelled with the rumour. Empty by default (all
+    // would be noise). A hidden rumour (AtlasRumourHidden) never gets an arrow.
+    public List<string> AtlasRumourArrows { get; set; } = new();
+    // One-time migration guard: plain map-name rules / colour-group entries that only exist as Expedition-area
+    // islands were rewritten to "Island:<name>" (plain names now match normal maps only — see AtlasNav.Match).
+    public bool AtlasIslandRulesMigrated { get; set; }
+    // Atlas auto-routing: draw only the route to the single NEAREST tracked target (fewest hops) instead of
+    // one route per matching target. Off by default (route to every target, capped at 30).
+    public bool AtlasNavNearestOnly { get; set; } = false;
+    // Fog-label radius (map hops): fog labels / island rumours / fogged content-icon marks are only built for
+    // fogged nodes within this many graph hops of an accessible node. 0 = unlimited (every fogged map).
+    public int AtlasFogLabelRadius { get; set; } = 0;
     // Route chevron spacing (#4): gap between the directional arrowheads drawn along a route, as a multiple
     // of the chevron size (higher = more spread out). Mirrors the GameHelper2 Atlas plugin's RouteArrowSpacing.
     public float AtlasRouteArrowSpacing { get; set; } = 8f;
@@ -508,6 +534,13 @@ public sealed class HoverPriceSettings
 {
     public bool Enabled { get; set; } = true;
     public double HighlightMinEx { get; set; } = 10.0;   // emphasize the chip when the (stack) value ≥ this many Exalted
+    // Display unit for EVERY price chip (hover, loot tags, ground labels, ritual, runeforge): "Auto" (div when
+    // ≥ 1 div, else ex — the original behaviour), "Exalted" or "Divine". Cycled in-game by UnitHotkey.
+    public string PriceUnit { get; set; } = "Auto";
+    // Virtual-key code that cycles PriceUnit (Auto → Exalted → Divine) while PoE2 is focused. 0x7A = F11; 0 = off.
+    public int UnitHotkey { get; set; } = 0x7A;
+    // Hide the hover chip while hovering a Ritual tribute-shop tile that already shows its own value chip.
+    public bool SuppressOnRitualTiles { get; set; } = true;
 }
 
 /// <summary>

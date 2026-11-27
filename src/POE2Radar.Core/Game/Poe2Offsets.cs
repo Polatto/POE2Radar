@@ -581,7 +581,7 @@ public static class Poe2
     /// <c>--tooltip-capture</c>): all 5 offered rewards read as full item entities with no hover needed.</summary>
     public static class Ritual
     {
-        public const int TileSlotItem = 0x4F8; // ✓ item-slot UiElement → reward item Entity (also the flask-bar slot field)
+        public const int TileSlotItem = 0x4E0; // ✓ 2026-11-18 patch -0x18 (was 0x4F8); item-slot UiElement → reward item Entity (also the flask-bar slot field)
     }
 
     /// <summary>Atlas map-node UiElement (a subclass with its own vtable; ~1200+ instances live in the

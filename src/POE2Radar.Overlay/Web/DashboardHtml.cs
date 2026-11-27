@@ -127,6 +127,7 @@ internal static class DashboardHtml
   .view{overflow:auto; padding:22px 26px; min-height:0}
   .view[hidden]{display:none}
   /* ── atlas tab ── */
+  [data-atpane][hidden]{display:none !important}
   .arow{display:grid; grid-template-columns:minmax(200px,2fr) minmax(120px,1.4fr) 120px; gap:10px; align-items:center;
         padding:5px 10px; border-bottom:1px solid var(--line); font-size:13px}
   .arow.ahead{font-weight:600; color:var(--ink-dim); border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel)}
@@ -411,6 +412,8 @@ internal static class DashboardHtml
           <div class="card" style="grid-column:1/-1">
             <h3>Display Rules <span class="tag">&middot; one ordered ruleset &mdash; first match wins</span></h3>
             <div class="row"><div class="rl hint-row">The single source of truth for how every entity draws. Each entity is matched <b>top&ndash;to&ndash;bottom</b>; the <b>first enabled rule that matches</b> decides everything &mdash; its icon &amp; color, whether it&rsquo;s hidden, whether it shows an HP bar, and whether it&rsquo;s auto-pathed. Reorder with &#9650;/&#9660; to change precedence. A rule matches on any mix of <i>type, metadata terms, monster mods (auras/buffs), rarity, reaction, life, chest/POI/encounter state</i>; a blank condition means &ldquo;any&rdquo;. No more conflicting filters &mdash; if two rules could match, the higher one wins.</div></div>
+            <div class="row"><div class="rl">All rules enabled<small>turn every display rule on or off at once (each rule&rsquo;s own switch still works afterwards)</small></div>
+              <label class="sw"><input type="checkbox" id="drAllEn"><span class="track"></span><span class="knob"></span></label></div>
             <div id="drList"></div>
             <div class="controls" style="margin:8px 0 0">
               <button class="addbtn" id="drPick" style="width:auto;margin:0;padding:9px 16px">+ Add from game data…</button>
@@ -474,6 +477,14 @@ internal static class DashboardHtml
               Hover a tile in-game + press <b>F10</b> to inspect it.
             </div>
 
+            <!-- sub-tabs: Maps / Expeditions / Player Hideouts (choice remembered in localStorage) -->
+            <div class="controls" id="atlasSubTabs" style="gap:6px;margin:0 0 12px;flex-wrap:wrap">
+              <button class="chip on" data-atsub="maps">Maps</button>
+              <button class="chip" data-atsub="exped">Expeditions</button>
+              <button class="chip" data-atsub="hideouts">Player Hideouts</button>
+            </div>
+
+            <div data-atpane="maps">
             <!-- quick presets -->
             <div class="controls" id="atlasPresets" style="gap:6px;margin:0 0 8px;flex-wrap:wrap">
               <span class="hint-row" style="opacity:.7;margin-right:2px">Quick&nbsp;set:</span>
@@ -491,15 +502,10 @@ internal static class DashboardHtml
               <label title="Draw in-game content art above tracked + fogged maps"><input type="checkbox" data-atset="atlasShowContentIcons"> Content icons</label>
               <label title="Content icon size (px)">Icon size <input type="number" data-atset="atlasContentIconSize" min="12" max="64" step="1" style="width:56px"></label>
               <label title="Small map name (+ content headline) on fogged / un-revealed atlas maps"><input type="checkbox" data-atset="atlasShowFogLabels"> Fog labels</label>
-              <label title="Teal map name + Expedition rumour on fogged ocean-island nodes (off = plain fog label)"><input type="checkbox" data-atset="atlasShowRumours"> Island rumours</label>
-              <label title="Line from each usable Expedition logbook boat to the unrevealed islands it reveals (with their rumours)"><input type="checkbox" data-atset="atlasShowBoatLinks"> Boat &rarr; islands</label>
+              <label title="Only label fogged maps (fog labels, island rumours, fogged content icons) within this many map hops of a map you can run now. 0 = every fogged map.">Fog radius (hops) <input type="number" data-atset="atlasFogLabelRadius" min="0" max="100" step="1" style="width:56px"></label>
+              <label title="Auto-route only to the single nearest tracked (Nav) map — fewest hops — instead of every matching map. The routed target's ring/arrow is drawn larger + haloed; the other Nav targets are dimmed."><input type="checkbox" data-atset="atlasNavNearestOnly"> Nearest only</label>
               <label title="Spacing of the directional arrows along routes">Arrow spacing <input type="number" data-atset="atlasRouteArrowSpacing" min="1.5" max="18" step="0.5" style="width:56px"></label>
-              <label title="Ring + 'Owner · Reward' label (also on fogged nodes) + off-screen arrow on public player hideouts (supporter-pack beacon) matching the reward filter"><input type="checkbox" data-atset="atlasShowPlayerHideouts"> Player hideouts</label>
-              <label title="Comma-separated, case-insensitive substrings matched against reward / reward id / owner (e.g. 'divine, exalted'). Empty = all player hideouts.">Hideout reward filter <input type="text" data-atset="atlasHideoutRewardFilter" placeholder="e.g. divine, exalted" style="width:170px"></label>
             </div>
-
-            <!-- public player hideouts (live; polled while this tab is open) -->
-            <div id="atlasHideouts" style="margin:0 0 10px"></div>
 
             <!-- active rules (removable chips) -->
             <div id="atlasActive" style="margin:0 0 8px"></div>
@@ -520,16 +526,44 @@ internal static class DashboardHtml
             <div id="atlasHlTable" style="max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:6px">
               <span class="hint-row" style="padding:8px;display:block">Open the Atlas in-game + Refresh to list filters.</span>
             </div>
+            </div><!-- /maps pane -->
+
+            <div data-atpane="exped" hidden>
+              <div class="controls" id="atlasOptsExp" style="gap:14px;margin:0 0 8px;flex-wrap:wrap;font-size:12px">
+                <label title="Teal map name + Expedition rumour on fogged ocean-island nodes (off = plain fog label)"><input type="checkbox" data-atset="atlasShowRumours"> Island rumours</label>
+                <label title="Line from each usable Expedition logbook boat to the unrevealed islands it reveals (with their rumours)"><input type="checkbox" data-atset="atlasShowBoatLinks"> Boat &rarr; islands</label>
+              </div>
+              <div class="hint-row" style="opacity:.75">Island rumours respect the <b>Fog radius</b> set on the Maps tab.</div>
+              <div class="card" style="margin-top:10px">
+                <div class="controls" style="gap:10px;margin:0 0 6px;flex-wrap:wrap;align-items:center">
+                  <b>Rumours</b>
+                  <input type="search" id="rumourFilter" placeholder="search&hellip;" style="width:160px">
+                  <span id="rumourSummary" class="hint-row" style="margin:0"></span>
+                </div>
+                <div id="atlasRumours"><span class="hint-row" style="opacity:.6">Atlas closed.</span></div>
+                <div class="hint-row" style="opacity:.75">Unchecked rumours get no island label and no boat &rarr; island line on the overlay. &#10148; = ring + off-screen arrow on every unrevealed island with that rumour (off by default).</div>
+              </div>
+            </div>
+
+            <div data-atpane="hideouts" hidden>
+              <div class="controls" id="atlasOptsHideout" style="gap:14px;margin:0 0 8px;flex-wrap:wrap;font-size:12px">
+                <label title="Ring + 'Owner · Reward' label (also on fogged nodes) + off-screen arrow on public player hideouts (supporter-pack beacon) matching the reward filter and checked in the table below. Off = no hideout markers, arrows or routes at all."><input type="checkbox" data-atset="atlasShowPlayerHideouts"> Player hideouts</label>
+                <label title="Comma-separated, case-insensitive substrings matched against reward / reward id / owner (e.g. 'divine, exalted'). Empty = all player hideouts.">Hideout reward filter <input type="text" data-atset="atlasHideoutRewardFilter" placeholder="e.g. divine, exalted" style="width:170px"></label>
+              </div>
+              <!-- public player hideouts (live; polled while this tab is open) -->
+              <div id="atlasHideouts" style="margin:0 0 10px"></div>
+            </div>
           </div>
 
           <!-- #7 colour groups: a named set of map names that all draw in one ring/label colour. -->
-          <div class="card" style="grid-column:1/-1">
+          <div class="card" style="grid-column:1/-1" data-atpane="maps">
             <h3 style="display:flex;align-items:center;gap:10px">Map colour groups
               <span class="hint-row" style="opacity:.7;font-weight:400">recolour a whole category at once (Citadels, Halls, Uniques&hellip;)</span>
               <span style="flex:1"></span>
               <button class="chip" id="atlasGroupAdd">+ Add group</button>
             </h3>
             <div id="atlasGroups"></div>
+            <div class="hint-row" style="opacity:.75">A plain map name matches normal maps only; use <b>Island:&lt;name&gt;</b> (e.g. Island:Sprawling Jungle) for an Expedition island, or the <b>Expedition Island</b> kind for every island.</div>
           </div>
         </div>
       </section>
@@ -542,6 +576,8 @@ internal static class DashboardHtml
               <label class="sw"><input type="checkbox" data-set="showTerrain"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Show player blip<small>blue dot marking your own position</small></div>
               <label class="sw"><input type="checkbox" data-set="showPlayerBlip"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Always mark rares &amp; bosses<small>rare and unique (boss) monsters stay marked even if no rule draws them; uniques get a double ring, rares restyled by another rule a ring (a Hide rule still wins)</small></div>
+              <label class="sw"><input type="checkbox" data-set="alwaysMarkRareUnique"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Always show overlay<small>draw even when PoE2 isn&rsquo;t focused (e.g. while tweaking this dashboard); auto-flask stays focus-gated</small></div>
               <label class="sw"><input type="checkbox" data-set="alwaysShowOverlay"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Hide junk entities<small>suppress cosmetic / FX / daemon dots</small></div>
@@ -550,6 +586,8 @@ internal static class DashboardHtml
               <label class="sw"><input type="checkbox" data-set="showPath"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Curated landmark names<small>community labels (boss / reward / exits)</small></div>
               <label class="sw"><input type="checkbox" data-set="useCuratedLandmarks"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Map boss marker<small>mark the boss arena in endgame maps on load</small></div>
+              <label class="sw"><input type="checkbox" data-set="mapBossLandmarks"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Overlay FPS cap<small>lower = less load on the game; 60 is smooth for a radar (15&ndash;360)</small></div>
               <input class="numin" type="number" step="1" min="15" max="360" data-set="fpsCap"></div>
           </div>
@@ -710,6 +748,10 @@ internal static class DashboardHtml
               <label class="sw"><input type="checkbox" data-hv="enabled"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Highlight threshold<small>emphasize the chip at or above this (stack) value (Ex)</small></div>
               <input class="numin" type="number" step="1" min="0" data-hv="highlightMinEx"></div>
+            <div class="row"><div class="rl">Value unit<small>for every price chip (hover, loot tags, ground labels, ritual, runeforge). Auto = div when &ge; 1 div, else ex. Press <b>F11</b> in-game to cycle</small></div>
+              <select class="numin selin" data-hv="priceUnit"><option value="Auto">Auto</option><option value="Exalted">Exalted</option><option value="Divine">Divine</option></select></div>
+            <div class="row"><div class="rl">Hide on Ritual tiles<small>no hover chip over a Ritual tribute tile that already shows its own value chip</small></div>
+              <label class="sw"><input type="checkbox" data-hv="suppressOnRitualTiles"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl hint-row">Hovering is explicit intent, so this ignores the ground category toggles &amp; value floors &mdash; any priced item shows. Stacks show the per-unit price and the stack total.</div></div>
           </div>
 
@@ -839,12 +881,20 @@ function renderHover(){
     else if(hover[k]!==undefined && hover[k]!==null) el.value=hover[k];
   });
 }
+// hoverPrice is POSTed whole, and the in-game unit hotkey (F11) changes hoverPrice.priceUnit behind the
+// dashboard's back — so re-read the live object before each save and apply only the edited field, never
+// reverting a hotkey change with a stale copy.
+async function setHover(k,v){
+  try{ const s=await getJSON('/api/settings'); if(s&&s.hoverPrice) hover=s.hoverPrice; }catch(e){}
+  hover=hover||{}; hover[k]=v; saveHover(); renderHover();
+}
 function saveHover(){ if(hover) saveSetting('hoverPrice', hover); }
 function wireHover(){
   $$('[data-hv]').forEach(el=>{
     const k=el.dataset.hv;
-    if(el.type==='checkbox') el.onchange=()=>{ hover=hover||{}; hover[k]=el.checked; saveHover(); };
-    else el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)){ hover=hover||{}; hover[k]=v; saveHover(); } };
+    if(el.type==='checkbox') el.onchange=()=>setHover(k, el.checked);
+    else if(el.tagName==='SELECT') el.onchange=()=>setHover(k, el.value);
+    else el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)) setHover(k, v); };
   });
 }
 /* ── live pricing status: shows the resolved league + load state, and uses the detected league as the
@@ -1153,7 +1203,12 @@ function drRow(r,i){
     ${body}
   </div>`;
 }
+/* "All rules enabled" master switch: checked when every rule is enabled; toggling sets every rule's
+   enabled flag and re-POSTs the whole list (persisted server-side like any other rule edit). */
+function syncDrAll(){ const a=$('#drAllEn'); if(!a) return; a.checked=drules.length>0&&drules.every(r=>r.enabled); a.indeterminate=drules.some(r=>r.enabled)&&!a.checked; }
+$('#drAllEn')?.addEventListener('change',e=>{ const on=e.target.checked; drules.forEach(r=>r.enabled=on); renderDrules(); saveDrules(); });
 function renderDrules(){
+  syncDrAll();
   const host=$('#drList'); if(!host) return;
   host.innerHTML = drules.length ? drules.map(drRow).join('') : '<div class="row"><div class="rl hint-row">No display rules yet. Add one below.</div></div>';
   $$('#drList .drrow').forEach(row=>{
@@ -1161,7 +1216,7 @@ function renderDrules(){
     const save=saveDrules;
     // Header (always present): click anywhere except a control toggles expand.
     row.querySelector('.drhead').onclick=e=>{ if(e.target.closest('input,button,select,label,.drord')) return; r._open=!r._open; renderDrules(); };
-    row.querySelector('.dr-en').onchange=e=>{ r.enabled=e.target.checked; row.classList.toggle('off',!r.enabled); save(); };
+    row.querySelector('.dr-en').onchange=e=>{ r.enabled=e.target.checked; row.classList.toggle('off',!r.enabled); syncDrAll(); save(); };
     row.querySelector('.dr-up').onclick=()=>{ if(i>0){ const t=drules[i-1]; drules[i-1]=drules[i]; drules[i]=t; renderDrules(); save(); } };
     row.querySelector('.dr-dn').onclick=()=>{ if(i<drules.length-1){ const t=drules[i+1]; drules[i+1]=drules[i]; drules[i]=t; renderDrules(); save(); } };
     row.querySelector('.dr-del').onclick=()=>{ drules.splice(i,1); renderDrules(); save(); };
@@ -1348,43 +1403,116 @@ $('#lmImport')?.addEventListener('click',()=>{
 let atlasOptsWired=false, atlasGroupsData=[];
 async function wireAtlasOpts(){
   let s; try{ s=await getJSON('/api/settings'); }catch(e){ return; }
-  document.querySelectorAll('#atlasOpts [data-atset]').forEach(el=>{
+  document.querySelectorAll('[data-view="atlas"] [data-atset]').forEach(el=>{
     const k=el.dataset.atset;
-    if(el.type==='checkbox'){ el.checked=!!s[k]; el.onchange=()=>saveSetting(k,el.checked); }
+    if(el.type==='checkbox'){ el.checked=!!s[k]; el.onchange=()=>{ saveSetting(k,el.checked); if(k==='atlasShowPlayerHideouts') renderHideouts(); }; }
     else if(el.type==='text'){ el.value=s[k]||''; el.onchange=()=>saveSetting(k, el.value); el.oninput=()=>renderHideouts(); }
     else { el.value=s[k]; el.onchange=()=>saveSetting(k, parseFloat(el.value)); }
   });
   atlasGroupsData = Array.isArray(s.atlasGroups) ? s.atlasGroups.map(g=>({name:g.name||'',color:g.color||'#E0B341',maps:(g.maps||[]).slice()})) : [];
+  hideoutUnsel = new Set(Array.isArray(s.atlasHideoutUnselected) ? s.atlasHideoutUnselected : []);
+  rumourHidden = new Set(Array.isArray(s.atlasRumourHidden) ? s.atlasRumourHidden.map(x=>String(x).toLowerCase()) : []);
+  rumourArrows = new Set(Array.isArray(s.atlasRumourArrows) ? s.atlasRumourArrows.map(x=>String(x).toLowerCase()) : []);
   renderAtlasGroups();
+  renderHideouts();
+  renderRumours();
 }
+// Expedition island rumours: checkbox list (checked = shown). Unchecked texts persist as atlasRumourHidden
+// (lower-cased; the overlay matches case-insensitively). Same no-flicker DOM approach as the hideout table.
+let rumourHidden=new Set(), rumourArrows=new Set();   // rumourArrows: texts ticked for ring + off-screen arrow (atlasRumourArrows)
+function renderRumours(){
+  const box=document.querySelector('#atlasRumours'); if(!box) return;
+  const d=hideoutData;
+  if(!d||!d.open){ setHideoutHtml(box,'<span class="hint-row" style="opacity:.6">Atlas closed.</span>'); return; }
+  const f=(document.querySelector('#rumourFilter')?.value||'').trim().toLowerCase();
+  const all=(d.rumours||[]).slice().sort((a,b)=>a.text.localeCompare(b.text));
+  const rows=all.filter(r=>!f||r.text.toLowerCase().includes(f));
+  const sum=document.querySelector('#rumourSummary');
+  if(sum) sum.innerHTML=all.filter(r=>!rumourHidden.has(r.text.toLowerCase())).length+' of '+all.length+' shown'
+    +(rumourArrows.size?' &middot; '+all.filter(r=>rumourArrows.has(r.text.toLowerCase())&&!rumourHidden.has(r.text.toLowerCase())).length+' with arrow':'')
+    +(rows.length?' &middot; <a href="#" id="rmAll">all</a> / <a href="#" id="rmNone">none</a>':'');
+  const body=rows.map(r=>{ const k=r.text.toLowerCase(), on=!rumourHidden.has(k), arw=on&&rumourArrows.has(k);
+    return '<div style="display:flex;gap:8px;align-items:center;padding:3px 8px;border-bottom:1px solid var(--line)'+(on?'':';opacity:.5')+'">'
+    +'<label style="display:flex;gap:8px;align-items:center;flex:1;cursor:pointer"><input type="checkbox" class="ho-sel" data-k="'+esc(r.text)+'"'+(on?' checked':'')+'>'
+    +'<span style="flex:1;color:#40ebe0">'+esc(r.text)+'</span></label>'
+    +'<span class="rm-arw" data-k="'+esc(r.text)+'" title="'+(on?'toggle off-screen arrow + ring on unrevealed islands with this rumour':'hidden rumours get no arrow')+'" style="font-size:15px;cursor:'+(on?'pointer':'default')+';color:'+(arw?'#40ebe0':'#4a525c')+'">&#10148;</span>'
+    +'<span class="amono">'+(r.count>0?'&times;'+r.count:'not seen')+'</span></div>'; }).join('');
+  const html=all.length?'<div class="ho-scroll" style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:6px;font-size:12px">'
+    +(body||'<span class="hint-row" style="padding:6px 8px;display:block">No rumour matches the search.</span>')+'</div>'
+    :'<span class="hint-row" style="opacity:.6">No island rumours on the atlas right now.</span>';
+  const changed=setHideoutHtml(box,html+'<!--'+(sum?sum.textContent:'')+'-->');
+  const save=()=>{ saveSetting('atlasRumourHidden',[...rumourHidden]); renderRumours(); };
+  const wire=()=>{
+    box.querySelectorAll('.ho-sel').forEach(cb=>cb.onchange=()=>{ const k=cb.dataset.k.toLowerCase(); if(cb.checked) rumourHidden.delete(k); else rumourHidden.add(k); save(); });
+    box.querySelectorAll('.rm-arw').forEach(a=>a.onclick=e=>{ e.preventDefault(); const k=a.dataset.k.toLowerCase(); if(rumourHidden.has(k)) return;
+      if(rumourArrows.has(k)) rumourArrows.delete(k); else rumourArrows.add(k); saveSetting('atlasRumourArrows',[...rumourArrows]); renderRumours(); });
+    const ra=document.querySelector('#rmAll'), rn=document.querySelector('#rmNone');
+    if(ra) ra.onclick=e=>{ e.preventDefault(); rows.forEach(r=>rumourHidden.delete(r.text.toLowerCase())); save(); };
+    if(rn) rn.onclick=e=>{ e.preventDefault(); rows.forEach(r=>rumourHidden.add(r.text.toLowerCase())); save(); };
+  };
+  wire();
+}
+document.querySelector('#rumourFilter')?.addEventListener('input',()=>renderRumours());
 // Public player hideouts: live table (polled every 3 s while the Atlas tab is open), filtered by the
 // "Hideout reward filter" box with the same rule as the overlay (comma-separated substrings vs reward/id/owner).
-let hideoutData=null;
+let hideoutData=null, hideoutUnsel=new Set();   // keys (owner or "@x,y") the user UNCHECKED — persisted as atlasHideoutUnselected
 function hideoutMatch(h, f){
   const toks=(f||'').split(',').map(t=>t.trim().toLowerCase()).filter(Boolean);
   if(!toks.length) return true;
   const hay=[h.reward,h.rewardId,h.owner].map(x=>(x||'').toLowerCase());
   return toks.some(t=>hay.some(x=>x.includes(t)));
 }
+// The hideout table is re-polled every 3 s: only touch the DOM when the rendered HTML actually changed, and
+// when it does, keep the page/tab scroll, the table's own scroll and the focused checkbox where they were
+// (a blind innerHTML swap made the table jump back to the top). Returns true when the DOM was replaced.
+function setHideoutHtml(box, html){
+  if(box._hoHtml===html) return false;
+  const view=box.closest('.view'), viewTop=view?view.scrollTop:0, pageY=window.scrollY;
+  const sc=box.querySelector('.ho-scroll'), scTop=sc?sc.scrollTop:0;
+  const fk=(document.activeElement&&box.contains(document.activeElement)&&document.activeElement.dataset)?document.activeElement.dataset.k:null;
+  box.innerHTML=html; box._hoHtml=html;
+  const sc2=box.querySelector('.ho-scroll'); if(sc2) sc2.scrollTop=scTop;
+  if(view) view.scrollTop=viewTop;
+  if(window.scrollY!==pageY) window.scrollTo(window.scrollX, pageY);
+  if(fk!=null){ const el=[...box.querySelectorAll('.ho-sel')].find(x=>x.dataset.k===fk); if(el) el.focus({preventScroll:true}); }
+  return true;
+}
 function renderHideouts(){
   const box=document.querySelector('#atlasHideouts'); if(!box) return;
+  // Table only while the "Player hideouts" toggle is on (it's the hideout picker for the overlay).
+  const showEl=document.querySelector('[data-view="atlas"] [data-atset="atlasShowPlayerHideouts"]');
+  if(showEl&&!showEl.checked){ setHideoutHtml(box,''); return; }
   const d=hideoutData;
-  if(!d||!d.open){ box.innerHTML='<span class="hint-row" style="opacity:.6">Player hideouts: atlas closed.</span>'; return; }
-  const f=document.querySelector('#atlasOpts [data-atset="atlasHideoutRewardFilter"]')?.value||'';
-  const all=d.list||[], rows=all.filter(h=>hideoutMatch(h,f));
-  const head='<div style="display:grid;grid-template-columns:1.3fr 1.6fr 1.3fr 80px 60px;gap:8px;font-weight:600;padding:4px 8px;border-bottom:1px solid var(--line)"><span>Owner</span><span>Hideout</span><span>Reward</span><span>Grid</span><span>Fogged</span></div>';
-  const body=rows.map(h=>'<div style="display:grid;grid-template-columns:1.3fr 1.6fr 1.3fr 80px 60px;gap:8px;padding:3px 8px;border-bottom:1px solid var(--line)">'
+  if(!d||!d.open){ setHideoutHtml(box,'<span class="hint-row" style="opacity:.6">Player hideouts: atlas closed.</span>'); return; }
+  const f=document.querySelector('[data-view="atlas"] [data-atset="atlasHideoutRewardFilter"]')?.value||'';
+  const keyOf=h=>h.key||(h.owner?h.owner:'@'+(h.grid||[]).join(','));
+  // Stable order (by key) so an unchanged hideout set renders identical HTML poll to poll.
+  const all=d.list||[], rows=all.filter(h=>hideoutMatch(h,f)).sort((a,b)=>keyOf(a).localeCompare(keyOf(b)));
+  const cols='grid-template-columns:28px 1.3fr 1.6fr 1.3fr 80px 60px';
+  const head='<div style="display:grid;'+cols+';gap:8px;font-weight:600;padding:4px 8px;border-bottom:1px solid var(--line)"><span title="highlight on the atlas (ring, label, arrow, route)">&#10003;</span><span>Owner</span><span>Hideout</span><span>Reward</span><span>Grid</span><span>Fogged</span></div>';
+  const body=rows.map(h=>{ const k=keyOf(h), on=!hideoutUnsel.has(k);
+    return '<div style="display:grid;'+cols+';gap:8px;padding:3px 8px;border-bottom:1px solid var(--line)'+(on?'':';opacity:.5')+'">'
+    +'<span><input type="checkbox" class="ho-sel" data-k="'+esc(k)+'"'+(on?' checked':'')+' title="highlight this hideout on the atlas"></span>'
     +'<span>'+esc(h.owner||'?')+'</span><span>'+esc(h.map||'—')+'</span>'
     +'<span title="'+esc(h.rewardId||'')+'" style="color:#ff4fd8">'+esc(h.reward||'—')+'</span>'
-    +'<span class="amono">'+(h.grid?h.grid.join(','):'')+'</span><span>'+(h.fogged?'yes':'')+'</span></div>').join('');
-  box.innerHTML='<div class="hint-row" style="margin:0 0 4px"><b>Player hideouts</b> &mdash; '+rows.length+' of '+all.length
-    +(d.show?'':' (overlay drawing is OFF)')+'</div>'
-    +(all.length?'<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;font-size:12px">'+head+(body||'<span class="hint-row" style="padding:6px 8px;display:block">No hideout matches the filter.</span>')+'</div>':'');
+    +'<span class="amono">'+(h.grid?h.grid.join(','):'')+'</span><span>'+(h.fogged?'yes':'')+'</span></div>'; }).join('');
+  const picked=rows.filter(h=>!hideoutUnsel.has(keyOf(h))).length;
+  const html='<div class="hint-row" style="margin:0 0 4px"><b>Player hideouts</b> &mdash; '+rows.length+' of '+all.length
+    +' match the filter, '+picked+' highlighted'+(d.show?'':' (overlay drawing is OFF)')
+    +(rows.length?' &middot; <a href="#" id="hoAll">all</a> / <a href="#" id="hoNone">none</a>':'')+'</div>'
+    +(all.length?'<div class="ho-scroll" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;font-size:12px">'+head+(body||'<span class="hint-row" style="padding:6px 8px;display:block">No hideout matches the filter.</span>')+'</div>':'');
+  if(!setHideoutHtml(box,html)) return;   // unchanged since the last poll → DOM (scroll, focus, handlers) left untouched
+  const saveSel=()=>{ saveSetting('atlasHideoutUnselected',[...hideoutUnsel]); renderHideouts(); };
+  box.querySelectorAll('.ho-sel').forEach(cb=>cb.onchange=()=>{ const k=cb.dataset.k; if(cb.checked) hideoutUnsel.delete(k); else hideoutUnsel.add(k); saveSel(); });
+  const ha=box.querySelector('#hoAll'), hn=box.querySelector('#hoNone');
+  if(ha) ha.onclick=e=>{ e.preventDefault(); rows.forEach(h=>hideoutUnsel.delete(keyOf(h))); saveSel(); };
+  if(hn) hn.onclick=e=>{ e.preventDefault(); rows.forEach(h=>hideoutUnsel.add(keyOf(h))); saveSel(); };
 }
 async function pollHideouts(){
   if(activeTab!=='atlas') return;
   try{ hideoutData=await getJSON('/api/atlas-hideouts'); }catch(e){ return; }
   renderHideouts();
+  renderRumours();
 }
 setInterval(pollHideouts, 3000);
 
@@ -1432,7 +1560,7 @@ const biomeName=i=>(i>=0&&i<BIOMES.length)?BIOMES[i]:('biome '+i);
 function catContent(t){ const s=t.toLowerCase(); if(/not shown|\[dnt\]/.test(s))return'Hidden'; if(/boss/.test(s))return'Boss'; if(/influence/.test(s))return'Influence'; return'Mechanic'; }
 function catMap(t){ const s=t.toLowerCase(); if(/citadel/.test(s))return'Citadel'; if(/tower/.test(s))return'Tower'; if(/temple/.test(s))return'Temple'; if(/vaal/.test(s))return'Vaal'; return'Map'; }
 // Per-category colour (badge tint).
-const CATCOL={Boss:'#e0533a',Mechanic:'#3ca0ff',Influence:'#a06cff',Hidden:'#ff5db1',Citadel:'#e0b341',Tower:'#2fb6a8',Temple:'#d98a2b',Vaal:'#c0395a',Unique:'#c678dd',Merchant:'#5aa9e6',Map:'#8a93a0',Type:'#d98a2b'};
+const CATCOL={Boss:'#e0533a',Mechanic:'#3ca0ff',Influence:'#a06cff',Hidden:'#ff5db1',Citadel:'#e0b341',Tower:'#2fb6a8',Temple:'#d98a2b',Vaal:'#c0395a',Unique:'#c678dd',Merchant:'#5aa9e6',Map:'#8a93a0',Type:'#d98a2b',Island:'#40ebe0'};
 function catBadge(cat){ const c=CATCOL[cat]||'#8a93a0'; return '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;background:'+c+'26;color:'+c+';border:1px solid '+c+'66">'+esc(cat)+'</span>'; }
 // Build the unified filter list (content + map) with {title,count,cat,group}.
 function atlasFilterRows(d){
@@ -1442,7 +1570,8 @@ function atlasFilterRows(d){
   // Type rows (#7): maps.json type/tags — unique / lineage / arbiter. One-click route-to-all-of-a-kind.
   (d.allDataTags||[]).forEach(t=>rows.push({title:t.tag,count:t.count,group:'Type',cat:'Type'}));
   (d.allTags||[]).forEach(t=>rows.push({title:t.tag,count:t.count,group:'Content',cat:catContent(t.tag),desc:t.desc}));
-  (d.allMaps||[]).forEach(t=>rows.push({title:t.tag,count:t.count,group:'Map',cat:catMap(t.tag)}));
+  // Expedition-area islands come keyed "Island:<name>" (a plain name matches normal maps only), shown as "<name> (island)".
+  (d.allMaps||[]).forEach(t=>rows.push({title:t.tag,label:t.label||null,count:t.count,group:'Map',cat:t.island?'Island':catMap(t.tag)}));
   return rows;
 }
 let atlasHlSort={key:'count',dir:-1};
@@ -1452,7 +1581,7 @@ function renderAtlasHighlight(d){
   if(rows.length===0){ box.innerHTML='<span class="hint-row" style="padding:8px;display:block">No filters yet (open the Atlas + Refresh).</span>'; updateHlCount(); return; }
   if(atlasGroup!=='all') rows=rows.filter(r=>r.group===atlasGroup);
   const flt=($('#atlasHlFilter')?.value||'').trim().toLowerCase();
-  if(flt) rows=rows.filter(r=>r.title.toLowerCase().includes(flt)||r.cat.toLowerCase().includes(flt)||r.group.toLowerCase().includes(flt));
+  if(flt) rows=rows.filter(r=>r.title.toLowerCase().includes(flt)||(r.label||'').toLowerCase().includes(flt)||r.cat.toLowerCase().includes(flt)||r.group.toLowerCase().includes(flt));
   if(atlasHlSelOnly) rows=rows.filter(r=>{const k=r.title.toLowerCase(); return atlasHl.has(k)||atlasNav.has(k)||atlasArrow.has(k);});
   const k=atlasHlSort.key, dir=atlasHlSort.dir;
   rows.sort((a,b)=>{
@@ -1480,7 +1609,7 @@ function renderAtlasHighlight(d){
       +'<span style="font-size:15px">'+(trk?'☑':'☐')+'</span>'
       +'<span class="hlnav" data-tag="'+esc(r.title)+'" title="toggle nav-to (route)" style="font-size:15px;cursor:pointer;color:'+(nav?'#3ddc97':'#4a525c')+'">&#8674;</span>'
       +'<span class="hlarw" data-tag="'+esc(r.title)+'" title="toggle off-screen arrow" style="font-size:15px;cursor:pointer;color:'+(arw?'#e0b341':'#4a525c')+'">➤</span>'
-      +'<span title="'+esc(r.desc||r.title)+'">'+esc(r.title)+'</span>'
+      +'<span title="'+esc(r.desc||r.title)+'">'+esc(r.label||r.title)+'</span>'
       +'<span class="amono" style="text-align:right">'+r.count+'</span>'
       +'<span>'+catBadge(r.cat)+'</span></div>';
   }).join('');
@@ -1577,6 +1706,15 @@ function renderAtlasNodes(d, f){
 async function postAtlasSel(){ try{ await fetch('/api/atlas-select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({els:[...atlasSel]})}); }catch(e){} }
 
 $('#atlasRefresh')?.addEventListener('click',loadAtlas);
+// Atlas sub-tabs (Maps / Expeditions / Player Hideouts): show one pane group, remember the choice.
+function showAtlasSub(name){
+  if(!['maps','exped','hideouts'].includes(name)) name='maps';
+  $$('#atlasSubTabs [data-atsub]').forEach(b=>b.classList.toggle('on', b.dataset.atsub===name));
+  $$('[data-atpane]').forEach(p=>{ p.hidden = p.dataset.atpane!==name; });
+  try{ localStorage.setItem('atlasSubTab', name); }catch(e){}
+}
+$$('#atlasSubTabs [data-atsub]').forEach(b=>b.addEventListener('click',()=>showAtlasSub(b.dataset.atsub)));
+{ let saved=null; try{ saved=localStorage.getItem('atlasSubTab'); }catch(e){} showAtlasSub(saved||'maps'); }
 $('#atlasSearch')?.addEventListener('input',()=>{ if(atlasData) renderAtlas(); });
 $$('#atlasViewCatalog,#atlasViewRegion,#atlasViewNodes').forEach(b=>b?.addEventListener('click',()=>{
   atlasView=b.dataset.view;

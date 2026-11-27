@@ -713,6 +713,10 @@ public sealed class Poe2Live
     /// after changing it so the per-area scan rebuilds. Clamped to a sane range when used.</summary>
     public int LandmarkClusterGap { get; set; } = 2;
 
+    /// <summary>Built-in "Map Boss" landmark for endgame maps: marks the largest tile cluster whose path
+    /// contains "boss" (fallback "arena") under /Maps/. Call <see cref="InvalidateLandmarks"/> after changing.</summary>
+    public bool MapBossLandmarks { get; set; } = true;
+
     /// <summary>Drop the cached per-area landmark scan so the next <see cref="Landmarks"/> call rebuilds
     /// it (e.g. after the user edits the custom landmark patterns from the dashboard).</summary>
     public void InvalidateLandmarks() => _landmarksKey = -1;
@@ -791,6 +795,15 @@ public sealed class Poe2Live
         // TgtFilePtr so we read each distinct tile type's StdWString once (dozens), not per tile.
         var pathCache = new Dictionary<nint, string?>();
         var cellsByPath = new Dictionary<string, List<(int tx, int ty)>>();
+        var bossActive = MapBossLandmarks
+                         && areaCode.StartsWith("Map", StringComparison.OrdinalIgnoreCase)
+                         && !areaCode.Contains("Hideout", StringComparison.OrdinalIgnoreCase)
+                         && !areaCode.Contains("_Claimable", StringComparison.OrdinalIgnoreCase);
+        // Map-boss candidate tiles (not already kept): 1 = "boss", 2 = "arena"; cached per TgtFile.
+        var bossPaths = new Dictionary<nint, string>();
+        var bossKind = new Dictionary<nint, int>();
+        var bossCells = new Dictionary<string, List<(int tx, int ty)>>();
+        var arenaCells = new Dictionary<string, List<(int tx, int ty)>>();
 
         for (long i = 0; i < count; i++)
         {
@@ -808,8 +821,23 @@ public sealed class Poe2Live
                            || CustomLandmarkMatch?.Invoke(p) != null;
                 path = keep ? p : null;
                 pathCache[tgtFile] = path;
+                if (bossActive && path is null && p.Contains("/Maps/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var kind = p.Contains("boss", StringComparison.OrdinalIgnoreCase) ? 1
+                        : p.Contains("arena", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+                    if (kind != 0) { bossKind[tgtFile] = kind; bossPaths[tgtFile] = p; }
+                }
             }
-            if (path is null) continue;
+            if (path is null)
+            {
+                if (bossKind.TryGetValue(tgtFile, out var k))
+                {
+                    var d = k == 1 ? bossCells : arenaCells;
+                    var bp = bossPaths[tgtFile];
+                    (d.TryGetValue(bp, out var bc) ? bc : d[bp] = new()).Add(((int)(i % tilesX), (int)(i / tilesX)));
+                }
+                continue;
+            }
             (cellsByPath.TryGetValue(path, out var cells) ? cells : cellsByPath[path] = new())
                 .Add(((int)(i % tilesX), (int)(i / tilesX)));
         }
@@ -828,6 +856,24 @@ public sealed class Poe2Live
                 var center = new System.Numerics.Vector2(
                     (float)(sx / cluster.Count * cell), (float)(sy / cluster.Count * cell));
                 result.Add(new Landmark(name, path, center, cluster.Count, curated));
+            }
+        }
+
+        // Exactly ONE "Map Boss" landmark: largest cluster across all candidate paths (boss, else arena).
+        var cand = bossCells.Count > 0 ? bossCells : arenaCells;
+        if (bossActive && cand.Count > 0)
+        {
+            string? bestPath = null; List<(int tx, int ty)>? best = null;
+            foreach (var (bpath, bcells) in cand)
+                foreach (var cl in ClusterTiles(bcells, Math.Clamp(LandmarkClusterGap, 0, 64)))
+                    if (best is null || cl.Count > best.Count) { best = cl; bestPath = bpath; }
+            if (best is not null && bestPath is not null)
+            {
+                double sx = 0, sy = 0;
+                foreach (var (tx, ty) in best) { sx += tx; sy += ty; }
+                var center = new System.Numerics.Vector2(
+                    (float)(sx / best.Count * cell), (float)(sy / best.Count * cell));
+                result.Add(new Landmark(LandmarkName(bestPath), bestPath, center, best.Count, "Map Boss"));
             }
         }
         return result;

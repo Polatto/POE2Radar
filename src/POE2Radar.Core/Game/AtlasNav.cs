@@ -13,9 +13,14 @@ public static class AtlasNav
     public static string? Match(ISet<string> set, in Poe2Atlas.AtlasNodeLive nd)
     {
         if (set.Count == 0) return null;
-        if (!string.IsNullOrEmpty(nd.MapName) && set.Contains(nd.MapName)) return nd.MapName;
+        // Map NAME: a plain name matches normal maps (and ocean-only unique maps such as The Jade Isles) but NOT an
+        // Expedition-area island that merely shares a normal map's display name — those match "Island:<name>" only
+        // (AtlasNodeLive.RuleName). "Expedition Island" matches every island.
+        if (!string.IsNullOrEmpty(nd.MapName) && set.Contains(nd.RuleName)) return nd.RuleName;
+        if (nd.IsExpeditionIsland && set.Contains(Poe2Atlas.AtlasNodeLive.ExpeditionIslandTag)) return Poe2Atlas.AtlasNodeLive.ExpeditionIslandTag;
         // Internal MapId too (e.g. a rule saved as "MapMothersoul_Female"), so id-keyed rules still match.
         if (!string.IsNullOrEmpty(nd.MapCode) && set.Contains(nd.MapCode)) return nd.MapCode;
+        if (!string.IsNullOrEmpty(nd.EndgameRowId) && nd.EndgameRowId != nd.MapCode && set.Contains(nd.EndgameRowId)) return nd.EndgameRowId;
         if (nd.Tags is { Count: > 0 }) foreach (var t in nd.Tags) if (set.Contains(t)) return t;
         if (!string.IsNullOrEmpty(nd.Kind) && nd.Kind != "Normal" && set.Contains(nd.Kind)) return nd.Kind;
         if (!string.IsNullOrEmpty(nd.MapType) && set.Contains(nd.MapType)) return nd.MapType;
@@ -51,6 +56,11 @@ public static class AtlasNav
         return string.IsNullOrEmpty(nd.HideoutReward) ? owner : $"{owner} · {nd.HideoutReward}";
     }
 
+    /// <summary>Stable key for a player hideout's dashboard selection checkbox: the owner ("Name#1234") when
+    /// known (survives the node moving on the grid), else "@x,y" (grid position).</summary>
+    public static string HideoutKey(in Poe2Atlas.AtlasNodeLive nd)
+        => !string.IsNullOrEmpty(nd.HideoutOwner) ? nd.HideoutOwner! : $"@{nd.GridX},{nd.GridY}";
+
     /// <summary>Route SOURCES: every status-bit0 ("accessible") node. bit0 is set on completed nodes too
     /// (0x03/0x13), so this is completed ∪ the runnable frontier; the BFS therefore starts each route at the
     /// nearest runnable map. Validated live 2026-11-25 (<c>--atlas-nav-debug</c>): of 291 bit0 non-completed
@@ -75,13 +85,14 @@ public static class AtlasNav
 
     /// <summary>Solve routes from <see cref="Sources"/> to every non-completed node matching
     /// <paramref name="navSet"/>. Every goal gets a result with a reason (ok / not-in-graph / unreachable /
-    /// too-many-hops / is-source). <paramref name="cap"/> limits the "ok" results (view readability).</summary>
+    /// too-many-hops / is-source). <paramref name="cap"/> limits the "ok" results (view readability; 1 = only the nearest target).
+    /// <paramref name="exclude"/> drops nodes from the goal set (e.g. player hideouts the user turned off).</summary>
     public static Plan Solve(Poe2Atlas atlas, IReadOnlyList<Poe2Atlas.AtlasNodeLive> nodes, ISet<string> navSet,
-        int maxHops, (int X, int Y)? curGrid, int cap = 30)
+        int maxHops, (int X, int Y)? curGrid, int cap = 30, Func<Poe2Atlas.AtlasNodeLive, bool>? exclude = null)
     {
         var goals = new List<(int X, int Y)>();
         foreach (var n in nodes)
-            if (!n.Completed && Match(navSet, n) != null) goals.Add(n.Grid);
+            if (!n.Completed && Match(navSet, n) != null && (exclude == null || !exclude(n))) goals.Add(n.Grid);
         var sources = goals.Count > 0 ? Sources(atlas, nodes, curGrid) : new List<(int X, int Y)>();
         var results = new List<GoalResult>(goals.Count);
         if (goals.Count == 0) return new Plan(sources, goals, results);

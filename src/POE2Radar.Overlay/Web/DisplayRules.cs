@@ -92,6 +92,12 @@ public sealed class DisplayRules
         return null;
     }
 
+    /// <summary>An alive, hostile RARE or UNIQUE (boss) monster — what <c>RadarSettings.AlwaysMarkRareUnique</c>
+    /// keeps marked on the map even when no enabled rule draws it.</summary>
+    public static bool IsRareOrUniqueMonster(in Poe2Live.EntityDot e)
+        => e.Category == Poe2Live.EntityCategory.Monster && e.IsAlive && !e.IsFriendly
+           && (e.Rarity == Poe2Live.Rarity.Rare || e.Rarity == Poe2Live.Rarity.Unique);
+
     /// <summary>
     /// Resolve a terrain TILE path to its first matching enabled rule of the special "Tile" category,
     /// or null. Tiles aren't entities, so a Tile rule matches purely on its <see cref="DisplayRule.Match"/>

@@ -46,7 +46,9 @@ public readonly record struct ItemLabel(Vector3 World, string Name, string Value
 /// "AtlasIconContentBreach") drawn in a row above the node (#5); null/empty = no icons. <see cref="Visible"/>
 /// is the node's live in-game visibility — icons are suppressed on visible nodes (the game draws its own
 /// there) and shown on fogged/off-screen ones.</summary>
-public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false, bool Nav = false, nint Element = 0, IReadOnlyList<string>? ContentIcons = null, bool Visible = false, string? FogLabel = null, bool Rumour = false);
+public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false, bool Nav = false, nint Element = 0, IReadOnlyList<string>? ContentIcons = null, bool Visible = false, string? FogLabel = null, bool Rumour = false, int Focus = 0);
+// Focus (AtlasNavNearestOnly): 0 = normal, 1 = THE routed nearest target (larger/brighter, route colour),
+// 2 = another Nav target that is NOT routed (ring/arrow dimmed so the routed one stands out).
 
 /// <summary>One auto-route polyline from the player's current atlas node (or the accessible frontier) to a
 /// tracked target tile. <see cref="Points"/> are canvas-space node centers (relPos), projected with the
@@ -178,6 +180,9 @@ public sealed record RenderContext(
     // Tile-landmark styling resolver (Phase 2b): given a tile path, the matching "Tile"-category rule
     // (styling pass) or null. Lets a rule restyle/hide a surfaced landmark; null → default Landmark style.
     Func<string, Web.DisplayRule?>? ResolveTile = null,
+    // Always mark alive hostile rare/unique monsters (fallback icon when no rule draws them + rarity ring).
+    // Mirrors RadarSettings.AlwaysMarkRareUnique.
+    bool MarkRareUnique = true,
     // ── Atlas overlay (takes precedence over the minimap/radar when the Atlas screen is open). ──
     bool AtlasOpen = false,                       // the Atlas screen is open → draw atlas highlights + route, suppress radar
     IReadOnlyList<AtlasMark>? AtlasNodes = null,   // tracked/arrowed nodes to highlight (canvas-space coords)
@@ -242,4 +247,6 @@ public sealed record RenderContext(
     string? ExchangeFillNote = null,   // the recommended-sale-ratio headline for that quantity
     float ExchangePanelX = 0f,         // exchange-window screen rect top-left (pin anchor; 0 = default corner)
     float ExchangePanelY = 0f,
-    bool ExchangeCollapsed = false);   // card shrunk to a small "expand" tab
+    bool ExchangeCollapsed = false,    // card shrunk to a small "expand" tab
+    // Brief on-screen notice (e.g. "Price unit: Divine" after the unit hotkey); null = none.
+    string? Toast = null);

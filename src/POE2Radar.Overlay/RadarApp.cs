@@ -55,6 +55,7 @@ public sealed class RadarApp : IDisposable
     private int _displayRulesGen;
     private int _landmarkStoreGen;
     private int _appliedClusterGap;
+    private bool _appliedMapBoss = true;
     private string _appliedLeague = "";
     private nint _areaInstanceForApi;   // current AreaInstance, for the /api/tiles tile-path lookup
     private nint _inGameStateForApi;    // current InGameState, for the /api/atlas node read
@@ -227,6 +228,9 @@ public sealed class RadarApp : IDisposable
     private DateTime _nextToggleAt = DateTime.MinValue;
     private DateTime _nextPathKeyAt = DateTime.MinValue;
     private DateTime _nextBrowserAt = DateTime.MinValue;
+    private DateTime _nextUnitKeyAt = DateTime.MinValue;   // price-unit cycle hotkey debounce (render thread)
+    private string? _toastText;                            // brief on-screen notice (render thread), e.g. "Prices: Divine"
+    private DateTime _toastUntilUtc = DateTime.MinValue;
     private float _hpPct = 100f, _manaPct = 100f, _esPct = 100f;
     private string _flaskNote = "";
     private string _charName = "";   // render thread (RadarState.CharName); area code comes from the snapshot
@@ -314,6 +318,7 @@ public sealed class RadarApp : IDisposable
         _live.CustomLandmarkMatch = TileLandmarkMatch; // surface tiles via landmark patterns + Tile rules
         _landmarkGen = _landmarkPatterns.Generation;
         _live.LandmarkClusterGap = _settings.LandmarkClusterGap;
+        _live.MapBossLandmarks = _appliedMapBoss = _settings.MapBossLandmarks;
         _appliedClusterGap = _settings.LandmarkClusterGap;
         // Unified display ruleset — single source of truth for the entity dot decision. On first run
         // (no display_rules.json) seed it from the legacy category styles + mechanics + watched rules
@@ -566,7 +571,7 @@ public sealed class RadarApp : IDisposable
         try { _api.Start(); Console.WriteLine($"API on http://localhost:{_settings.ApiPort} (dashboard at /)"); }
         catch (Exception ex) { Console.Error.WriteLine($"API server disabled: {ex.Message}"); }
         Console.WriteLine("Hotkeys: F6=add nearest path target  F7=clear path targets  "
-                          + "F8=auto-flask  F9=quit  F12=open dashboard");
+                          + "F8=auto-flask  F9=quit  F11=cycle price unit  F12=open dashboard");
         Console.WriteLine("         F10 (Atlas open) = inspect hovered tile (dumps map name + code + content"
                           + " to console for web-UI filters) and set route START->END (3rd press resets)");
         // Best-effort version check against GitHub (non-blocking; never fails startup).
@@ -1024,6 +1029,19 @@ public sealed class RadarApp : IDisposable
         var hov = _live.ReadHoveredItem(inGameState, _window.Width, _window.Height, cx, cy);
         if (hov is not { } h) { _hoverPrice = null; return; }
 
+        // Ritual tribute shop: each priced tile already carries its own value chip (UpdateRitualRewards ran
+        // earlier this tick), so hovering one would show the same value twice. Suppress the hover chip only
+        // for the hovered item that sits on a chipped tile (cursor or hovered slot centre inside its rect).
+        if (cfg.SuppressOnRitualTiles && _ritualRender is { Open: true } rit)
+        {
+            float hx = h.BoxX + h.BoxW * 0.5f, hy = h.BoxY + h.BoxH * 0.5f;
+            foreach (var t in rit.Labels)
+            {
+                bool In(float px, float py) => px >= t.X && px <= t.X + t.W && py >= t.Y && py <= t.Y + t.H;
+                if (In(cx, cy) || In(hx, hy)) { _hoverPrice = null; return; }
+            }
+        }
+
         // Uniques key off art (each has its own icon, and an unID unique's name is hidden); the rest off name.
         var isUnique = h.Rarity == Poe2Live.Rarity.Unique;
         var pr = isUnique ? _priceBook.TryByArt(h.Art)
@@ -1349,6 +1367,7 @@ public sealed class RadarApp : IDisposable
             ItemLabels: itemLabels,
             Resolve: _resolveEntity,
             ResolveTile: _resolveTileDraw,
+            MarkRareUnique: _settings.AlwaysMarkRareUnique,
             AtlasOpen: ar.Open,
             AtlasNodes: _atlasMarkFrame,   // marks with per-frame-fresh relPos (smooth pan), not the baked world-walk positions
             // Projection: derived live from the window height (UIscale = winH/1600) × live zoom. relPos is
@@ -1398,7 +1417,8 @@ public sealed class RadarApp : IDisposable
             ExchangeFillNote: ex.Open ? ex.FillNote : null,
             ExchangePanelX: ex.Open ? ex.PanelX : 0f,
             ExchangePanelY: ex.Open ? ex.PanelY : 0f,
-            ExchangeCollapsed: ex.Open && ex.Collapsed);
+            ExchangeCollapsed: ex.Open && ex.Collapsed,
+            Toast: DateTime.UtcNow < _toastUntilUtc ? _toastText : null);
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
@@ -1480,6 +1500,12 @@ public sealed class RadarApp : IDisposable
             _live.LandmarkClusterGap = _appliedClusterGap;
             _live.InvalidateLandmarks();
         }
+        if (_settings.MapBossLandmarks != _appliedMapBoss)
+        {
+            _appliedMapBoss = _settings.MapBossLandmarks;
+            _live.MapBossLandmarks = _appliedMapBoss;
+            _live.InvalidateLandmarks();
+        }
         // Live-apply a changed price league (dashboard/config edit) → re-fetch for that league.
         if (_settings.GroundItems.League != _appliedLeague)
         {
@@ -1499,6 +1525,7 @@ public sealed class RadarApp : IDisposable
 
         // Resolve + price unique ground drops (art basename → name + ex value) for the loot overlay.
         _priceBook.RefreshIfDue();
+        _priceBook.Unit = Pricing.PriceBook.NormalizeUnit(_settings.HoverPrice.PriceUnit);   // display unit for every chip
         var itemLabels = BuildItemLabels();
 
         // Atlas F10 route — ReadNodes is cheap when the atlas is closed (it gates on the atlas
@@ -1544,6 +1571,8 @@ public sealed class RadarApp : IDisposable
         // they're already gone from the map + nav-target list, but the still-present (faded)
         // entity would otherwise keep resolving, so the route would keep pathing to it.
         PruneCompletedTargets();
+        // …and targets the display rules now hide (rule toggled off / Hide), so their routes disappear too.
+        PruneHiddenTargets();
 
         // Per-tick route maintenance (draw-only, NO A* on this thread). For each selected
         // target: cheaply advance its cursor; fire a BACKGROUND replan only on a real trigger.
@@ -1858,6 +1887,24 @@ public sealed class RadarApp : IDisposable
             OpenDashboard();
         }
 
+        // Price-unit cycle (default F11, HoverPrice.UnitHotkey; 0 = off): Auto → Exalted → Divine for every
+        // price chip. Foreground-gated + debounced; persisted; a short toast confirms the new unit. Draw-only.
+        var unitVk = _settings.HoverPrice.UnitHotkey;
+        if (unitVk > 0 && Down(unitVk) && DateTime.UtcNow >= _nextUnitKeyAt
+            && _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd)
+        {
+            _nextUnitKeyAt = DateTime.UtcNow.AddMilliseconds(350);
+            var units = Pricing.PriceBook.Units;
+            var cur = Array.IndexOf(units, Pricing.PriceBook.NormalizeUnit(_settings.HoverPrice.PriceUnit));
+            var next = units[(cur + 1) % units.Length];
+            _settings.HoverPrice.PriceUnit = next;
+            _priceBook.Unit = next;
+            _settings.Save();
+            _toastText = $"Price unit: {next}";
+            _toastUntilUtc = DateTime.UtcNow.AddMilliseconds(1600);
+            Console.WriteLine($"\nPrice unit: {next}");
+        }
+
         // F6 adds the nearest not-yet-selected landmark to the path selection; F7 clears it.
         // Both debounced.
         if (DateTime.UtcNow >= _nextPathKeyAt)
@@ -1975,15 +2022,38 @@ public sealed class RadarApp : IDisposable
         return false;
     }
 
+    /// <summary>Whether the map renderer draws this entity (same decision as OverlayRenderer.DrawMap): not junk
+    /// (when HideJunk is on) and resolved to an enabled, non-Hide display rule — or, with no rule, an alive
+    /// hostile rare/unique kept by AlwaysMarkRareUnique. Nav targeting uses this so an entity the rules hide
+    /// (or whose rule is disabled) is never auto-selected / F6-picked, and an existing route to it is dropped.</summary>
+    private bool EntityShownByRules(in Poe2Live.EntityDot e)
+    {
+        if (_settings.HideJunk && JunkFilter.IsJunk(e.Metadata)) return false;
+        var rule = _displayRules.Resolve(e);
+        if (rule is null) return _settings.AlwaysMarkRareUnique && DisplayRules.IsRareOrUniqueMonster(e);
+        return !rule.Hide;
+    }
+
+    /// <summary>Whether the map renderer draws this tile landmark (same decision as OverlayRenderer.DrawMap):
+    /// its styling Tile rule isn't a Hide rule, and either a rule matches or the default Landmark style is on.</summary>
+    private bool LandmarkShownByRules(string path)
+    {
+        var tr = _displayRules.ResolveTile(path, requireMatch: false);
+        if (tr is { Hide: true }) return false;
+        return tr != null || _settings.Styles.Landmark.Enabled;
+    }
+
     private List<NavTarget> BuildNavTargets(NumVec2 player)
     {
         var targets = new List<NavTarget>(_landmarks.Count + 16);
         var seen = new HashSet<string>();
 
-        // (a) Tile landmarks — id "t:<key>" (per-cluster). Auto-path when a Tile rule opts in.
+        // (a) Tile landmarks — id "t:<key>" (per-cluster). Auto-path when a Tile rule opts in. Landmarks the
+        // display rules hide are not targets (so they're never auto-selected / F6-picked).
         foreach (var lm in _landmarks)
         {
             var id = "t:" + lm.Key;
+            if (!LandmarkShownByRules(lm.Path)) continue;
             if (!seen.Add(id)) continue;
             var autoPath = _displayRules.ResolveTile(lm.Path, requireMatch: false)?.Navigable ?? false;
             targets.Add(new NavTarget(id, LandmarkLabel(lm), lm.Center, lm.Path, IsEntity: false, AutoPath: autoPath));
@@ -1991,8 +2061,10 @@ public sealed class RadarApp : IDisposable
 
         // (b) Entity POIs — id "e:<entityId>", nearest-first. Selectable if POI/unique/Auto-path rule;
         // AutoPath true only when the matched rule's Auto-path flag is set.
+        // Only entities the map actually draws: a disabled/Hide rule (e.g. the user turned the Breach rule off)
+        // removes the icon AND its eligibility as a nav target.
         var pois = _entities
-            .Where(e => e.IsAlive && !e.IconComplete)
+            .Where(e => e.IsAlive && !e.IconComplete && EntityShownByRules(e))
             .Select(e => (e, nav: (_displayRules.Resolve(e)?.Navigable ?? false) && MonolithNavAllowed(e)))
             .Where(x => x.e.Poi
                         || (x.e.Category == Poe2Live.EntityCategory.Monster && x.e.Rarity == Poe2Live.Rarity.Unique)
@@ -2076,6 +2148,36 @@ public sealed class RadarApp : IDisposable
                 foreach (var e in _entities)
                     if (e.Id == eid) return e.IconComplete; // present → prune iff completed; else keep
                 return false; // absent (out of range) → keep; it may return
+            });
+        }
+    }
+
+    /// <summary>
+    /// Drop selected targets the display rules now HIDE (rule disabled / Hide rule / junk), so toggling a
+    /// rule off in the dashboard also removes the route to that entity/landmark (in-game + map), not just its
+    /// icon. Like <see cref="PruneCompletedTargets"/>, only targets PRESENT this tick are judged — an entity
+    /// out of network range stays selected.
+    /// </summary>
+    private void PruneHiddenTargets()
+    {
+        lock (_navLock)
+        {
+            if (_selectedIds.Count == 0) return;
+            _selectedIds.RemoveAll(id =>
+            {
+                if (id.StartsWith("e:", StringComparison.Ordinal) && uint.TryParse(id.AsSpan(2), out var eid))
+                {
+                    foreach (var e in _entities)
+                        if (e.Id == eid) return !EntityShownByRules(e);
+                    return false;
+                }
+                if (id.StartsWith("t:", StringComparison.Ordinal))
+                {
+                    var key = id[2..];
+                    foreach (var lm in _landmarks)
+                        if (lm.Key == key) return !LandmarkShownByRules(lm.Path);
+                }
+                return false;
             });
         }
     }
@@ -2460,12 +2562,18 @@ public sealed class RadarApp : IDisposable
                 .Select(g => new { tag = g.Key, count = g.Count(), desc = AtlasMapData.Shared.ContentDesc(g.Key), icon = AtlasMapData.Shared.ContentIcon(g.Key) }),
             // Distinct MAP NAMES (Sun Temple, Precursor Tower, Vaal City, …) — the separate "Map" filter
             // group, so towers/temples/specific maps are highlightable independently of rolled content.
-            allMaps = nodes.Where(n => !string.IsNullOrEmpty(n.MapName)).GroupBy(n => n.MapName)
-                .OrderBy(g => g.Key).Select(g => new { tag = g.Key, count = g.Count() }),
+            // Expedition-area islands are keyed "Island:<name>" (the rule that targets them — a plain name only
+            // matches normal maps) and labelled "<name> (island)".
+            allMaps = nodes.Where(n => !string.IsNullOrEmpty(n.MapName)).GroupBy(n => n.RuleName)
+                .OrderBy(g => g.First().MapName).ThenBy(g => g.Key)
+                .Select(g => new { tag = g.Key, count = g.Count(), label = g.First().IsExpeditionArea ? g.First().MapName + " (island)" : null, island = g.First().IsExpeditionArea }),
             // Map-archetype KINDS present (Citadel / Boss / Tower / Unique / Merchant) — first-class track
             // targets (improvement 3): tracking "Tower" rings/routes EVERY tower without listing each name.
+            // + the virtual "Expedition Island" kind (every ocean island, AtlasNodeLive.IsExpeditionIsland).
             allKinds = nodes.Where(n => !string.IsNullOrEmpty(n.Kind) && n.Kind != "Normal").GroupBy(n => n.Kind)
-                .OrderByDescending(g => g.Count()).Select(g => new { tag = g.Key, count = g.Count() }),
+                .Select(g => (tag: g.Key, count: g.Count()))
+                .Append((tag: Poe2Atlas.AtlasNodeLive.ExpeditionIslandTag, count: nodes.Count(n => n.IsExpeditionIsland)))
+                .Where(t => t.count > 0).OrderByDescending(t => t.count).Select(t => new { tag = t.tag, count = t.count }),
             // maps.json classification tokens (#7): the map TYPE (e.g. "unique") + cross-cutting TAGS
             // (lineage/arbiter). Selectable as one-click route/track targets like allKinds. De-duped union.
             allDataTags = nodes.SelectMany(n =>
@@ -2532,6 +2640,8 @@ public sealed class RadarApp : IDisposable
                     unlocked = n.Unlocked, visited = n.Visited, visible = n.Visible,
                     accessible = n.Accessible, completed = n.Completed, kind = n.Kind,
                     x = (int)n.X, y = (int)n.Y, map = n.MapName, tags = n.Tags,
+                    island = n.IsExpeditionIsland, expeditionArea = n.IsExpeditionArea, areaId = n.EndgameRowId, code = n.MapCode,
+                    rumour = n.Rumour, revealed = n.Revealed,
                 }),
         };
     }
@@ -2543,6 +2653,7 @@ public sealed class RadarApp : IDisposable
     private object[] PlayerHideoutRows(IReadOnlyList<Poe2Atlas.AtlasNodeLive> nodes)
     {
         var filter = _settings.AtlasHideoutRewardFilter ?? "";
+        var unselected = new HashSet<string>(_settings.AtlasHideoutUnselected ?? new(), StringComparer.Ordinal);
         return nodes.Where(n => n.IsPlayerHideout)
             .OrderBy(n => n.HideoutReward ?? "", StringComparer.OrdinalIgnoreCase).ThenBy(n => n.HideoutOwner, StringComparer.OrdinalIgnoreCase)
             .Select(n => (object)new
@@ -2550,6 +2661,8 @@ public sealed class RadarApp : IDisposable
                 el = ((long)n.Element).ToString(),
                 owner = n.HideoutOwner, map = n.MapName, reward = n.HideoutReward, rewardId = n.HideoutRewardId,
                 grid = new[] { n.GridX, n.GridY }, fogged = !n.Visible, matches = AtlasNav.MatchHideoutFilter(filter, n),
+                // Dashboard checkbox: key (owner, or "@x,y") + whether the user left it checked.
+                key = AtlasNav.HideoutKey(n), selected = !unselected.Contains(AtlasNav.HideoutKey(n)),
             }).ToArray();
     }
 
@@ -2563,11 +2676,30 @@ public sealed class RadarApp : IDisposable
             show = _settings.AtlasShowPlayerHideouts,
             filter = _settings.AtlasHideoutRewardFilter ?? "",
             list = PlayerHideoutRows(nodes),
+            rumours = RumourRows(nodes),
         };
+    }
+
+    /// <summary>Distinct island rumours currently seen on unrevealed atlas nodes (+ count), plus every previously-hidden
+    /// rumour (count 0 when not visible now) so it can be re-enabled. Sorted alphabetically.</summary>
+    private object[] RumourRows(IReadOnlyList<Poe2Atlas.AtlasNodeLive> nodes)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var n in nodes)
+            if (!string.IsNullOrEmpty(n.Rumour) && (!n.Visible || !n.Revealed))
+                counts[n.Rumour] = counts.TryGetValue(n.Rumour, out var c) ? c + 1 : 1;
+        var hidden = new HashSet<string>(_settings.AtlasRumourHidden ?? new(), StringComparer.OrdinalIgnoreCase);
+        var arrows = new HashSet<string>(_settings.AtlasRumourArrows ?? new(), StringComparer.OrdinalIgnoreCase);
+        foreach (var h in hidden) counts.TryAdd(h, 0);
+        foreach (var a in arrows) counts.TryAdd(a, 0);
+        return counts.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => (object)new { text = kv.Key, count = kv.Value, hidden = hidden.Contains(kv.Key), arrow = arrows.Contains(kv.Key) }).ToArray();
     }
 
     // Ring/arrow colour of matched public player hideouts (magenta — distinct from the rule/group palette).
     private const string PlayerHideoutColor = "#FF4FD8";
+    // Ring/arrow colour of islands whose rumour is ticked for an arrow (the teal of the rumour fog labels).
+    private const string RumourArrowColor = "#40EBE0";
 
     private static readonly (string Code, string Color, bool On)[] BuiltInAtlasTargets =
     {
@@ -2591,8 +2723,9 @@ public sealed class RadarApp : IDisposable
         ("Halls",    "#e0b341", new[] { "The Matriarch Halls", "The Patriarch Halls" }),
         ("Uniques",  "#ff9933", new[] { "Untainted Paradise", "Castaway", "The Fractured Lake",
             "The Ezomyte Megaliths", "Moment of Zen", "The Viridian Wildwood" }),
-        ("Expedition", "#fff0d9", new[] { "Sprawling Jungle", "Secluded Temple", "Obscure Island",
-            "Mournful Cliffside", "Moor of Fallen Skies" }),
+        // Expedition boss/special islands — "Island:" keys so they never colour a same-named normal map.
+        ("Expedition", "#fff0d9", new[] { "Island:Sprawling Jungle", "Island:Secluded Temple", "Island:Obscure Island",
+            "Island:Mournful Cliffside", "Island:Moor of Fallen Skies" }),
     };
 
     /// <summary>One-time seed (#6 + #7) of the built-in target rules + colour groups, gated on first full
@@ -2609,7 +2742,7 @@ public sealed class RadarApp : IDisposable
             var byCode = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var n in nodes)
                 if (!string.IsNullOrEmpty(n.MapCode) && !string.IsNullOrEmpty(n.MapName))
-                    byCode.TryAdd(n.MapCode, n.MapName);
+                    byCode.TryAdd(n.MapCode, n.RuleName);
             // ADDITIVE: add each built-in target name to the rule lists if not already present, never
             // clearing the user's own rules. Seeds once (the AtlasTargetsSeeded guard), independent of the
             // legacy AtlasRulesInitialized so it also reaches configs from before this preset existed.
@@ -2637,6 +2770,27 @@ public sealed class RadarApp : IDisposable
                 foreach (var (name, color, maps) in DefaultAtlasGroups)
                     _settings.AtlasGroups.Add(new AtlasMapGroup { Name = name, Color = color, Maps = new List<string>(maps) });
             _settings.AtlasGroupsSeeded = true;
+            changed = true;
+        }
+
+        if (!_settings.AtlasIslandRulesMigrated)
+        {
+            // Plain map names no longer match Expedition-area islands (AtlasNav.Match). Keep older configs working:
+            // a plain rule / group entry / colour key naming a map that exists on this atlas ONLY as an Expedition-area
+            // island (no normal map of that name) is rewritten to "Island:<name>". Names shared with a normal map stay
+            // plain (they now target the normal map — the point of the change).
+            var islandOnly = new HashSet<string>(nodes.Where(n => n.IsExpeditionArea && n.MapName.Length > 0).Select(n => n.MapName), StringComparer.OrdinalIgnoreCase);
+            islandOnly.ExceptWith(nodes.Where(n => !n.IsExpeditionArea && n.MapName.Length > 0).Select(n => n.MapName));
+            // The old plain-name "Expedition" preset always meant the islands, even if they aren't streamed in now.
+            islandOnly.UnionWith(new[] { "Sprawling Jungle", "Secluded Temple", "Obscure Island", "Mournful Cliffside", "Moor of Fallen Skies" });
+            string Mig(string? s) { var t = s ?? ""; return islandOnly.Contains(t) ? Poe2Atlas.AtlasNodeLive.AtlasIslandPrefix + t : t; }
+            void MigList(List<string>? l) { if (l == null) return; for (var i = 0; i < l.Count; i++) l[i] = Mig(l[i]); var d = l.Distinct(StringComparer.OrdinalIgnoreCase).ToList(); l.Clear(); l.AddRange(d); }
+            MigList(_settings.AtlasHighlightTags); MigList(_settings.AtlasNavTags); MigList(_settings.AtlasArrowTags);
+            if (_settings.AtlasGroups != null) foreach (var g in _settings.AtlasGroups) MigList(g?.Maps);
+            if (_settings.AtlasHighlightColors is { Count: > 0 } cols)
+                foreach (var k in cols.Keys.Where(k => islandOnly.Contains(k)).ToList())
+                { cols.TryAdd(Poe2Atlas.AtlasNodeLive.AtlasIslandPrefix + k, cols[k]); cols.Remove(k); }
+            _settings.AtlasIslandRulesMigrated = true;
             changed = true;
         }
 
@@ -2728,6 +2882,18 @@ public sealed class RadarApp : IDisposable
             foreach (var n in nodes)
                 if (n.IsPlayerHideout)
                     sig = sig * 31L ^ n.Grid.GetHashCode() ^ StringComparer.Ordinal.GetHashCode(n.HideoutOwner ?? "") ^ ((long)StringComparer.Ordinal.GetHashCode(n.HideoutReward ?? "") << 16);
+        // Per-hideout dashboard checkboxes (unchecked keys), nearest-only routing, fog-label radius.
+        var hideoutUnselected = new HashSet<string>(_settings.AtlasHideoutUnselected ?? new(), StringComparer.Ordinal);
+        foreach (var k in hideoutUnselected) sig = sig * 31L ^ StringComparer.Ordinal.GetHashCode(k);
+        sig = sig * 1000003L ^ (long)hideoutUnselected.Count ^ (_settings.AtlasNavNearestOnly ? 1L << 8 : 0L) ^ ((long)_settings.AtlasFogLabelRadius << 10);
+        // Hidden island rumours (dashboard Expeditions → Rumours checkboxes).
+        var rumourHidden = new HashSet<string>(_settings.AtlasRumourHidden ?? new(), StringComparer.OrdinalIgnoreCase);
+        foreach (var k in rumourHidden) sig = sig * 31L ^ StringComparer.OrdinalIgnoreCase.GetHashCode(k);
+        sig = sig * 1000003L ^ (long)rumourHidden.Count;
+        // Rumours ticked for an arrow (dashboard Expeditions → Rumours "arrow" toggles).
+        var rumourArrows = new HashSet<string>(_settings.AtlasRumourArrows ?? new(), StringComparer.OrdinalIgnoreCase);
+        foreach (var k in rumourArrows) sig = sig * 37L ^ StringComparer.OrdinalIgnoreCase.GetHashCode(k);
+        sig = sig * 1000003L ^ ((long)rumourArrows.Count << 3);
         if (_builtAtlasOnce && _atlas.AllTagsResolved && sig == _lastAtlasSig)
             return;   // view + inputs unchanged → marks/route stay frozen (off-screen arrows don't jitter)
         _lastAtlasSig = sig; _builtAtlasOnce = true;
@@ -2759,30 +2925,47 @@ public sealed class RadarApp : IDisposable
         }
         var marks = new List<AtlasMark>(128);
         HashSet<nint>? rumourLabelled = null;   // nodes whose teal fog rumour label is drawn (boat links skip their label)
+        var markGrids = new List<(int X, int Y)>(128);   // parallel to marks: each mark's grid (nearest-only focus pass)
         // Routing inputs gathered alongside the marks: grid→node ELEMENT (so the render thread re-reads each
         // route point's live relPos per frame), the tracked tiles to route to, and each tile's ring colour.
         var gridToPoint = new Dictionary<(int, int), AtlasPoint>(nodes.Count);
         var trackedGrids = new List<(int, int)>();
         var gridColor = new Dictionary<(int, int), string?>();
         foreach (var n in nodes) gridToPoint[n.Grid] = new AtlasPoint(n.Element, n.X, n.Y);
+        // A PLAYER hideout is drawn/routed only when the "Player hideouts" toggle is on, it matches the reward
+        // filter AND the user hasn't unchecked it in the dashboard table. Any other player hideout is dropped
+        // entirely (no ring/label/arrow/fog label, and never a route goal — even if a Track/Nav/Arrow rule such
+        // as "Player Hideout" would match it), so the toggle + checkboxes fully control hideout markers.
+        bool HideoutAllowed(in Poe2Atlas.AtlasNodeLive nd)
+            => _settings.AtlasShowPlayerHideouts && AtlasNav.MatchHideoutFilter(hideoutFilter, nd)
+               && !hideoutUnselected.Contains(AtlasNav.HideoutKey(nd));
+        // Fog-label radius: hop distance from the accessible frontier, computed once per rebuild only when a
+        // limit is set. Fogged nodes farther than the radius (or not in the graph) get no fog-only mark.
+        Dictionary<(int X, int Y), int>? fogDist = null;
+        if (_settings.AtlasFogLabelRadius > 0)
+            fogDist = _atlas.HopDistances(AtlasNav.Sources(_atlas, nodes, curGrid), _settings.AtlasFogLabelRadius);
         foreach (var n in nodes)
         {
+            if (n.IsPlayerHideout && !HideoutAllowed(n)) continue;
             var selected = sel.Contains(n.Element);
             var mTrack = Match(hlTrack, n);
             var mNav = Match(hlNav, n);
             var mArrow = Match(hlArrow, n);
             // Public PLAYER hideout matching the reward filter: ring + "Owner · Reward" label (fogged or not) +
             // off-screen arrow. Exempt from the declutter filters below (you're explicitly hunting it).
-            var hideoutLabel = _settings.AtlasShowPlayerHideouts && AtlasNav.MatchHideoutFilter(hideoutFilter, n) ? AtlasNav.HideoutLabel(n) : null;
+            var hideoutLabel = n.IsPlayerHideout ? AtlasNav.HideoutLabel(n) : null;   // (allowed — checked above)
             var isHideout = hideoutLabel != null;
-            var isTracked = selected || mTrack != null || isHideout;   // Highlight (ring)
+            // Rumour arrow: an UNREVEALED island whose rumour the user ticked "arrow" for (and didn't hide) → ring +
+            // off-screen arrow labelled with the rumour, in the teal rumour colour.
+            var isRumourArrow = !n.Revealed && !string.IsNullOrEmpty(n.Rumour) && rumourArrows.Contains(n.Rumour) && !rumourHidden.Contains(n.Rumour);
+            var isTracked = selected || mTrack != null || isHideout || isRumourArrow;   // Highlight (ring)
             var isNav = mNav != null;                     // Nav-to (route line)
-            var isArrow = mArrow != null || isHideout;    // Arrow (off-screen pointer)
+            var isArrow = mArrow != null || isHideout || isRumourArrow;    // Arrow (off-screen pointer)
 
             // #3 declutter: hide done maps (and optionally accessible-now ones). F10 route endpoints are
             // drawn separately (BuildAtlasRoute), so they survive. Completed maps are already nav-excluded.
-            if (!isHideout && _settings.AtlasHideCompleted && n.Completed) continue;
-            if (!isHideout && _settings.AtlasHideAccessible && n.Accessible && !n.Completed) continue;
+            if (!isHideout && !isRumourArrow && _settings.AtlasHideCompleted && n.Completed) continue;
+            if (!isHideout && !isRumourArrow && _settings.AtlasHideAccessible && n.Accessible && !n.Completed) continue;
 
             // #5 on-node content icons: resolve this node's content tags to icon asset basenames. Drawn on
             // tracked nodes and, crucially, on FOGGED nodes the game hides icons on (surfacing what's hidden).
@@ -2799,18 +2982,22 @@ public sealed class RadarApp : IDisposable
             // renderer draws icons only for !Visible nodes), so we reveal content on un-revealed maps. Otherwise
             // only highlighted/nav/arrow maps draw. AtlasDrawAll debug overrides this to draw every node.
             bool foggedIconNode = contentIcons is { Count: > 0 } && !n.Visible;
+            // Fog-label radius (0 = unlimited): a fogged node beyond N hops of the accessible frontier gets no
+            // fog label / rumour / icon-only mark (tracked/nav/arrow nodes are unaffected).
+            var fogInRange = fogDist == null || fogDist.ContainsKey(n.Grid);
+            if (!fogInRange) foggedIconNode = false;
             // Fog label: every FOGGED node (element local-visible bit, Flags +0x168 bit 0x0B, off) gets a small
             // "Map name · headline" text so un-revealed maps can be read. Independent of the tracking rules.
             // Island rumours: a fogged node whose EndgameMaps row carries an Expedition rumour (ocean islands —
             // "Warm but risky...") gets "Map · headline · rumour" in a distinct teal (AtlasMark.Rumour). Own toggle
             // (AtlasShowRumours); when off, these nodes fall back to the plain fog label.
             string? fogLabel = null; var rumourMark = false;
-            if (!n.Visible)
+            if (!n.Visible && fogInRange)
             {
                 var head = n.Tags is { Count: > 0 } ? n.Tags[0] : null;
                 var nm = string.IsNullOrEmpty(n.MapName) ? null : n.MapName;
                 var baseLabel = nm != null && head != null ? $"{nm} · {head}" : (nm ?? head);
-                if (_settings.AtlasShowRumours && !string.IsNullOrEmpty(n.Rumour))
+                if (_settings.AtlasShowRumours && !string.IsNullOrEmpty(n.Rumour) && !rumourHidden.Contains(n.Rumour))
                 {
                     fogLabel = baseLabel != null ? $"{baseLabel} · {n.Rumour}" : n.Rumour;
                     rumourMark = true;
@@ -2823,13 +3010,18 @@ public sealed class RadarApp : IDisposable
                 ? (n.Tags is { Count: > 0 } ? n.Tags[0] : (string.IsNullOrEmpty(n.MapName) ? null : n.MapName))
                 : null);   // icon-only fogged marks carry no label (icons alone)
             string? color = matched != null && _settings.AtlasHighlightColors.TryGetValue(matched, out var c) ? c
-                : (groupColor != null && !string.IsNullOrEmpty(n.MapName) && groupColor.TryGetValue(n.MapName, out var gc) ? gc : null);
+                : (groupColor != null && !string.IsNullOrEmpty(n.MapName) && groupColor.TryGetValue(n.RuleName, out var gc) ? gc : null);
+            // "Island:<name>" rule → show the plain map name on the overlay.
+            if (label != null && label.StartsWith(Poe2Atlas.AtlasNodeLive.AtlasIslandPrefix, StringComparison.OrdinalIgnoreCase))
+                label = label[Poe2Atlas.AtlasNodeLive.AtlasIslandPrefix.Length..];
+            if (isRumourArrow && matched == null && !isHideout) { label = n.Rumour; color ??= RumourArrowColor; }
             if (isHideout) { label = hideoutLabel; color = PlayerHideoutColor; }   // hideout label/colour win (it's what you filtered for)
             // Route to NAV tiles that aren't already done — independent of the ring/arrow toggles. (The goal set
             // itself is recomputed by AtlasNav.Solve below; this just records the ring colour per goal.)
             if (isNav && !n.Completed) { trackedGrids.Add(n.Grid); gridColor[n.Grid] = color; }
             marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow, isNav, n.Element, contentIcons, n.Visible, fogLabel, rumourMark));
-            if (rumourMark && label == null) (rumourLabelled ??= new HashSet<nint>()).Add(n.Element);
+            markGrids.Add(n.Grid);
+            if ((rumourMark && label == null) || isRumourArrow) (rumourLabelled ??= new HashSet<nint>()).Add(n.Element);
         }
 
         // Expedition boats -> unrevealed islands of the boat's 16x16 block. Skip a boat whose anchor node isn't
@@ -2844,6 +3036,7 @@ public sealed class RadarApp : IDisposable
             {
                 var isl = nodes[ii];
                 if (isl.Revealed || ii == b.Anchor) continue;
+                if (!string.IsNullOrEmpty(isl.Rumour) && rumourHidden.Contains(isl.Rumour)) continue;   // user unchecked this rumour
                 pts.Add(new AtlasPoint(isl.Element, isl.X, isl.Y));
                 lbls.Add(string.IsNullOrEmpty(isl.Rumour) || (rumourLabelled?.Contains(isl.Element) ?? false) ? null : isl.Rumour);
             }
@@ -2863,7 +3056,10 @@ public sealed class RadarApp : IDisposable
             // whatever I mouse over"). Fall back to the marker only when no accessible node is known (rare).
             // Shared with Research --atlas-nav-debug (Core AtlasNav): same Match, sources and BFS, so the probe
             // explains exactly what is drawn here. Capped at 30 routes, nearest first (keep the view readable).
-            var plan = AtlasNav.Solve(_atlas, nodes, hlNav, _settings.AtlasAutoRouteMaxHops, curGrid, cap: 30);
+            // "Nearest only" (AtlasNavNearestOnly) keeps just the single fewest-hops route. Player hideouts the
+            // toggle/filter/checkboxes disallow are never goals.
+            var plan = AtlasNav.Solve(_atlas, nodes, hlNav, _settings.AtlasAutoRouteMaxHops, curGrid,
+                cap: _settings.AtlasNavNearestOnly ? 1 : 30, exclude: nd => nd.IsPlayerHideout && !HideoutAllowed(nd));
             foreach (var r in plan.Drawable)
             {
                 var pts = new List<AtlasPoint>(r.Path!.Count);
@@ -2873,6 +3069,20 @@ public sealed class RadarApp : IDisposable
                 autoRoutes.Add(new AtlasAutoSpec(pts, col, r.Hops));
             }
             LogNavPlanOnce(plan);
+
+            // "Nearest only": one route is drawn, but every Nav target still carries its ring / off-screen arrow
+            // in the same colour. Tag the ROUTED goal (Focus 1 → larger/brighter) and dim the other Nav targets
+            // (Focus 2). The cap is GLOBAL (cap:1 across all Nav tags), so there is exactly one routed goal.
+            // Non-Nav marks (Track/Arrow-only rules, hideouts without a Nav rule) are untouched.
+            if (_settings.AtlasNavNearestOnly && autoRoutes.Count > 0 && plan.Drawable.FirstOrDefault() is { } nearest)
+            {
+                for (var i = 0; i < marks.Count; i++)
+                {
+                    var m = marks[i];
+                    if (markGrids[i] == nearest.Goal) marks[i] = m with { Focus = 1 };
+                    else if (m.Nav) marks[i] = m with { Focus = 2 };
+                }
+            }
         }
 
         var (start, end, route) = BuildAtlasRoute(nodes, startGrid, goalGrid);
