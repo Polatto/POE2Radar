@@ -34,6 +34,12 @@ namespace POE2Radar.Overlay.Web;
 ///   GET  /api/zone                — static zone reference: friendly name, act/level, flags, leveling notes
 ///   GET  /api/landmark-patterns   — user tile-path patterns surfaced as landmarks (pattern/label/enabled)
 ///   POST /api/landmark-patterns   — add/update/remove a landmark pattern; loopback-Host-gated
+///   GET  /api/diag/status         — current session log path (redacted) + size
+///   POST /api/diag/note           — {text}: append a "=== NOTE: …" marker to the session log; loopback-gated
+///   POST /api/diag/snapshot       — write a redacted JSON snapshot (/state + /api/atlas + settings + health)
+///                                   under logs\snapshots\; loopback-gated
+///   GET  /api/diag/export         — zip of logs + snapshots + radar_settings/display_rules + system-info
+///                                   (all redacted) as a download; also saved under exports\; loopback-gated
 /// </summary>
 public sealed class ApiServer : IDisposable
 {
@@ -63,9 +69,12 @@ public sealed class ApiServer : IDisposable
     private readonly Action<IReadOnlyList<(string tag, string color, bool track, bool nav, bool arrow)>>? _atlasHighlight;
     // Version/update info provider ({current, latest, updateAvailable, url}) for the dashboard banner.
     private readonly Func<object>? _version;
+    // Diagnostics: cheap attach/offset health ({gameStateResolved, areaCode, atlasOpen, …}) for /api/diag/snapshot.
+    private readonly Func<object>? _diagHealth;
     private volatile bool _running;
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static readonly JsonSerializerOptions JsonIndented = new(Json) { WriteIndented = true };
 
     public ApiServer(
         Func<RadarState> state,
@@ -83,6 +92,7 @@ public sealed class ApiServer : IDisposable
         Action<IReadOnlyList<long>>? atlasSelect = null,
         Action<IReadOnlyList<(string tag, string color, bool track, bool nav, bool arrow)>>? atlasHighlight = null,
         Func<object>? versionProvider = null,
+        Func<object>? diagHealthProvider = null,
         int port = 7777)
     {
         _state = state;
@@ -90,6 +100,7 @@ public sealed class ApiServer : IDisposable
         _atlasSelect = atlasSelect;
         _atlasHighlight = atlasHighlight;
         _version = versionProvider;
+        _diagHealth = diagHealthProvider;
         _settings = settings;
         _navGet = navGet;
         _navToggle = navToggle;
@@ -140,44 +151,63 @@ public sealed class ApiServer : IDisposable
                 break;
 
             case "/state":
+                Write(ctx, 200, JsonSerializer.Serialize(StatePayload(s), Json));
+                break;
+
+            case "/api/diag/status":
+                Write(ctx, 200, JsonSerializer.Serialize(DiagStatus(), Json));
+                break;
+
+            case "/api/diag/note":
             {
-                var counts = s.Entities.GroupBy(e => e.Category)
-                    .ToDictionary(g => g.Key.ToString(), g => g.Count());
-                Write(ctx, 200, JsonSerializer.Serialize(new
+                if (ctx.Request.HttpMethod != "POST") { Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json)); break; }
+                if (!IsLoopbackHost(ctx.Request)) { Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json)); break; }
+                string text = "";
+                try
                 {
-                    // Character name + level intentionally omitted (privacy: this endpoint is local
-                    // but unauthenticated, and screenshots/streams shouldn't leak the character).
-                    s.InGame, areaCode = s.AreaCode, areaHash = s.AreaHash, areaLevel = s.AreaLevel,
-                    areaName = ZoneGuide.Shared.FriendlyName(s.AreaCode),
-                    areaAct = ZoneGuide.Shared.Area(s.AreaCode)?.Act ?? 0,
-                    mapVisible = s.MapVisible, zoom = s.Zoom,
-                    hpPct = s.HpPct, manaPct = s.ManaPct, esPct = s.EsPct, autoFlask = s.AutoFlask, flask = s.FlaskNote,
-                    player = new { x = s.Player.X, y = s.Player.Y },
-                    entityCount = s.Entities.Count,
-                    poiCount = s.Entities.Count(e => e.Poi),
-                    landmarkCount = s.Landmarks.Count,
-                    counts,
-                    worldMs = s.WorldMs, renderMs = s.RenderMs, fps = s.Fps,
-                    // Runeshape monoliths in the area (slot count + anchor + priced reward set) for the
-                    // dashboard's Monolith Rewards card. Rewards are pre-sorted by value, server-side.
-                    monoliths = (s.Monoliths ?? Array.Empty<MonolithMarker>()).Select(m => new
-                    {
-                        holes = m.Holes, unique = m.IsUnique, collected = m.Collected, anchor = m.AnchorName,
-                        bestEx = m.BestEx, bestName = m.BestName, color = m.Color,
-                        rewards = m.Rewards.Select(r => new { name = r.Name, count = r.Count, ex = r.Ex, size = r.Size, runes = r.Runes }),
-                    }),
-                    // Currency-exchange live order book (when the exchange panel is open) for the dashboard
-                    // depth card + autonomous verification. Ratio = Get/Give; cum = running stock total.
-                    currencyExchange = new
-                    {
-                        open = s.ExchangeOpen,
-                        summary = s.ExchangeSummary,
-                        haveQty = s.ExchangeHaveQty,
-                        fillNote = s.ExchangeFillNote,
-                        offered = (s.ExchangeOffered ?? Array.Empty<ExchangeRow>()).Select(r => new { ratio = r.Ratio, stock = r.Stock, cum = r.CumStock, rec = r.Recommended }),
-                        wanted = (s.ExchangeWanted ?? Array.Empty<ExchangeRow>()).Select(r => new { ratio = r.Ratio, stock = r.Stock, cum = r.CumStock, rec = r.Recommended }),
-                    },
-                }, Json));
+                    using var doc = JsonDocument.Parse(ReadBody(ctx));
+                    if (doc.RootElement.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String) text = t.GetString() ?? "";
+                }
+                catch { Write(ctx, 400, JsonSerializer.Serialize(new { error = "expected JSON {text}" }, Json)); break; }
+                if (string.IsNullOrWhiteSpace(text)) { Write(ctx, 400, JsonSerializer.Serialize(new { error = "empty note" }, Json)); break; }
+                Diagnostics.RadarLog.Note(text);
+                Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, status = DiagStatus() }, Json));
+                break;
+            }
+
+            case "/api/diag/snapshot":
+            {
+                if (ctx.Request.HttpMethod != "POST") { Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json)); break; }
+                if (!IsLoopbackHost(ctx.Request)) { Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json)); break; }
+                // Read-side only: reuses the /state + /api/atlas + /api/settings builders, plus RadarApp's
+                // cheap health summary. Each part is isolated so one failing reader can't sink the snapshot.
+                var snap = new Dictionary<string, object?>
+                {
+                    ["takenAt"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff zzz"),
+                    ["version"] = _version?.Invoke(),
+                    ["health"] = SafePart(() => _diagHealth?.Invoke()),
+                    ["state"] = SafePart(() => StatePayload(s)),
+                    ["atlas"] = SafePart(() => _atlas?.Invoke()),
+                    ["settings"] = SafePart(() => ReadSettings()),
+                };
+                var snapPath = Diagnostics.RadarLog.WriteSnapshot(JsonSerializer.Serialize(snap, JsonIndented));
+                Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, file = Diagnostics.RadarLog.Redact(snapPath), status = DiagStatus() }, Json));
+                break;
+            }
+
+            case "/api/diag/export":
+            {
+                // GET so a plain <a href> / window.location triggers a browser download. Same loopback-Host
+                // gate as the writes (it creates a file under exports\ and bundles the logs).
+                if (!IsLoopbackHost(ctx.Request)) { Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json)); break; }
+                var (_, name, bytes) = Diagnostics.RadarLog.Export();
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/zip";
+                ctx.Response.Headers["Cache-Control"] = "no-store";
+                ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{name}\"";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.OutputStream.Close();
                 break;
             }
 
@@ -975,6 +1005,64 @@ public sealed class ApiServer : IDisposable
         v = 0; return false;
     }
 
+
+    /// <summary>The /state payload (shared with /api/diag/snapshot so the snapshot is exactly what /state serves).</summary>
+    private static object StatePayload(RadarState s)
+    {
+        var counts = s.Entities.GroupBy(e => e.Category)
+            .ToDictionary(g => g.Key.ToString(), g => g.Count());
+        return new
+        {
+            // Character name + level intentionally omitted (privacy: this endpoint is local
+            // but unauthenticated, and screenshots/streams shouldn't leak the character).
+            s.InGame, areaCode = s.AreaCode, areaHash = s.AreaHash, areaLevel = s.AreaLevel,
+            areaName = ZoneGuide.Shared.FriendlyName(s.AreaCode),
+            areaAct = ZoneGuide.Shared.Area(s.AreaCode)?.Act ?? 0,
+            mapVisible = s.MapVisible, zoom = s.Zoom,
+            hpPct = s.HpPct, manaPct = s.ManaPct, esPct = s.EsPct, autoFlask = s.AutoFlask, flask = s.FlaskNote,
+            player = new { x = s.Player.X, y = s.Player.Y },
+            entityCount = s.Entities.Count,
+            poiCount = s.Entities.Count(e => e.Poi),
+            landmarkCount = s.Landmarks.Count,
+            counts,
+            worldMs = s.WorldMs, renderMs = s.RenderMs, fps = s.Fps,
+            // Runeshape monoliths in the area (slot count + anchor + priced reward set) for the
+            // dashboard's Monolith Rewards card. Rewards are pre-sorted by value, server-side.
+            monoliths = (s.Monoliths ?? Array.Empty<MonolithMarker>()).Select(m => new
+            {
+                holes = m.Holes, unique = m.IsUnique, collected = m.Collected, anchor = m.AnchorName,
+                bestEx = m.BestEx, bestName = m.BestName, color = m.Color,
+                rewards = m.Rewards.Select(r => new { name = r.Name, count = r.Count, ex = r.Ex, size = r.Size, runes = r.Runes }),
+            }),
+            // Currency-exchange live order book (when the exchange panel is open) for the dashboard
+            // depth card + autonomous verification. Ratio = Get/Give; cum = running stock total.
+            currencyExchange = new
+            {
+                open = s.ExchangeOpen,
+                summary = s.ExchangeSummary,
+                haveQty = s.ExchangeHaveQty,
+                fillNote = s.ExchangeFillNote,
+                offered = (s.ExchangeOffered ?? Array.Empty<ExchangeRow>()).Select(r => new { ratio = r.Ratio, stock = r.Stock, cum = r.CumStock, rec = r.Recommended }),
+                wanted = (s.ExchangeWanted ?? Array.Empty<ExchangeRow>()).Select(r => new { ratio = r.Ratio, stock = r.Stock, cum = r.CumStock, rec = r.Recommended }),
+            },
+        };
+    }
+
+    /// <summary>Current session log path (redacted) + size, for the dashboard Diagnostics tab.</summary>
+    private static object DiagStatus() => new
+    {
+        logPath = Diagnostics.RadarLog.Redact(Diagnostics.RadarLog.SessionPath),
+        logBytes = Diagnostics.RadarLog.SessionBytes,
+        logCapBytes = Diagnostics.RadarLog.MaxSessionBytes,
+        capped = Diagnostics.RadarLog.Capped,
+        exportDir = Diagnostics.RadarLog.Redact(Diagnostics.RadarLog.ExportDir),
+    };
+
+    private static object? SafePart(Func<object?> f)
+    {
+        try { return f(); }
+        catch (Exception ex) { return new { error = ex.Message }; }
+    }
 
     private static bool IsLoopbackHost(HttpListenerRequest req)
     {

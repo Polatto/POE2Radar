@@ -104,6 +104,23 @@ the nearest landmark/POI and **F7** clears routes; **F10** (with the Atlas open)
 hovered tile and sets a route start/end. All other settings live in the dashboard (no calibration
 hotkeys, to avoid accidental presses).
 
+## Diagnostics / reporting a bug
+
+Every session is logged automatically to `logs\radar-<date>-<time>.log` next to the exe (timestamped
+console output plus crash stack traces; the last 10 sessions are kept, 20 MB cap each).
+
+To report a problem, open the dashboard (**F12**) → **Diagnostics** tab:
+1. While reproducing the issue, type what you see and press **Add note** (adds a marker to the log).
+2. Press **Snapshot** at the problematic moment (saves the current state, atlas data, settings and
+   attach health to `logs\snapshots\`).
+3. Press **Export logs (.zip)** — the browser downloads `POE2Radar-diag-<version>-<time>.zip` (a copy is
+   also saved in `exports\`). Send that zip to the developer.
+
+The zip contains only the kept logs, snapshots, `config\radar_settings.json`, `config\display_rules.json`
+and a `system-info.txt` (app/OS/.NET version, game process + window size) — no price or other caches.
+Everything in it is **redacted**: your user-profile path becomes `%USERPROFILE%`, your Windows user name
+`<user>`, the PC name `<machine>`, your character name `<character>`, and e-mail addresses `<email>`.
+
 ## Architecture
 
 Three projects:

@@ -552,7 +552,7 @@ public sealed class RadarApp : IDisposable
         Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); display rules: {_displayRules.Count}; known mods: {_modCatalog.Count}");
         _api = new ApiServer(() => _state, _settings, GetNavSelection, ToggleNavTarget, ClearNavSelection,
                              _hidden, _displayRules, _landmarkStore, CurrentTilePaths, () => _modCatalog.All, PricesJson, AtlasJson, SetAtlasSelection,
-                             SetAtlasHighlight, VersionJson, _settings.ApiPort);
+                             SetAtlasHighlight, VersionJson, DiagHealthJson, _settings.ApiPort);
         try { _api.Start(); Console.WriteLine($"API on http://localhost:{_settings.ApiPort} (dashboard at /)"); }
         catch (Exception ex) { Console.Error.WriteLine($"API server disabled: {ex.Message}"); }
         Console.WriteLine("Hotkeys: F6=add nearest path target  F7=clear path targets  "
@@ -597,6 +597,38 @@ public sealed class RadarApp : IDisposable
         };
     }
 
+    /// <summary>API (/api/diag/snapshot): cheap attach/offset health — only already-published fields and
+    /// counters (no extra memory walks), so a tester's snapshot can't perturb the tick loops.</summary>
+    private object DiagHealthJson()
+    {
+        var s = _state;
+        var ar = _atlasRender;
+        return new
+        {
+            process = new
+            {
+                name = _process.ProcessName, pid = _process.ProcessId,
+                moduleBase = $"0x{_process.MainModuleBase:X}", moduleSize = $"0x{_process.MainModuleSize:X}",
+            },
+            gameWindowFound = _gameHwnd != 0,
+            window = new { width = _window.Width, height = _window.Height },
+            gameStateResolved = _inGameStateForApi != 0,
+            areaInstanceResolved = _lastAreaInstance != 0,
+            inGame = s.InGame,
+            areaCode = s.AreaCode,
+            areaName = ZoneGuide.Shared.FriendlyName(s.AreaCode),
+            areaLevel = s.AreaLevel,
+            entityCount = s.Entities.Count,
+            landmarkCount = s.Landmarks.Count,
+            mapVisible = s.MapVisible,
+            atlasOpen = ar.Open,
+            atlasGraphNodes = _atlas.GraphNodeCount,
+            atlasGraphVersion = _atlas.GraphVersion,
+            worldMs = s.WorldMs, renderMs = s.RenderMs, fps = s.Fps,
+            autoFlask = s.AutoFlask,
+        };
+    }
+
     public void Run()
     {
         _gameHwnd = OverlayNative.FindWindowForProcess(_process.ProcessId);
@@ -614,7 +646,7 @@ public sealed class RadarApp : IDisposable
             {
                 frameSw.Restart();
                 if (_gameHwnd == 0) _gameHwnd = OverlayNative.FindWindowForProcess(_process.ProcessId);
-                if (_gameHwnd != 0) _window.TrackGameWindow(_gameHwnd);
+                if (_gameHwnd != 0) { _window.TrackGameWindow(_gameHwnd); Diagnostics.RadarLog.NoteGameWindow(_window.Width, _window.Height); }
                 if (!_window.PumpMessages()) break;
                 Tick();
 
@@ -1104,7 +1136,7 @@ public sealed class RadarApp : IDisposable
             map = _liveRender.ReadMap(inGameState, areaInstance);
             // Player name reads a StdWString (allocates a string) — read it only when the local-player
             // pointer changes (i.e. once per session), not every render frame.
-            if (localPlayer != _charNameFor) { _charNameFor = localPlayer; _charName = _liveRender.PlayerName(localPlayer); }
+            if (localPlayer != _charNameFor) { _charNameFor = localPlayer; _charName = _liveRender.PlayerName(localPlayer); Diagnostics.RadarLog.AddCharacterName(_charName); }
             _cameraMatrix = _liveRender.CameraMatrix(inGameState);
             TickAutoFlask(localPlayer);
 

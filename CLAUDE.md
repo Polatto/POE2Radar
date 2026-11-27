@@ -81,6 +81,10 @@ clearly gated — a personal QoL tool, not a headless bot.
 - `Web/ApiServer.cs` — read-only HTTP API on `localhost:7777` (`/state`, `/entities`, `/landmarks`,
   `/api/icons` — the icon library for the dashboard's SVG-preview shape pickers).
 - `Input/SendInputNative.cs` — scancode `SendInput` for auto-flask.
+- `Diagnostics/RadarLog.cs` — tees Console.Out/Error into `logs\radar-<session>.log` (timestamp + thread
+  tag, redacted, 20 MB cap, last 10 sessions) + crash hooks; notes/snapshots/zip export behind
+  `/api/diag/{status,note,snapshot,export}` (dashboard Diagnostics tab). Redacts profile path, user/machine
+  name, character name, e-mails.
 
 **Research** (`src/POE2Radar.Research/Program.cs`) — **post-patch recovery starts here**:
 `--recover [--deep]` (relaxed AOB + structural GameState validation, then brute-forces

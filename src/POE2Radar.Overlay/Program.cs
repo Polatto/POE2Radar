@@ -1,5 +1,10 @@
 using POE2Radar.Core;
 using POE2Radar.Overlay;
+using POE2Radar.Overlay.Diagnostics;
+
+if (Thread.CurrentThread.Name == null) Thread.CurrentThread.Name = "Main";
+// Tee console output into logs\radar-<session>.log (+ crash hooks) for bug reports — see README "Diagnostics".
+RadarLog.Init();
 
 Console.WriteLine("POE2Radar — map/radar overlay");
 Console.WriteLine("=============================");
@@ -11,6 +16,7 @@ if (process is null)
     return 1;
 }
 Console.WriteLine($"Attached to {process.ProcessName} (PID {process.ProcessId})");
+RadarLog.NoteAttach(process.ProcessName, process.ProcessId, process.MainModuleBase, process.MainModuleSize);
 
 var reader = new MemoryReader(process);
 
@@ -28,4 +34,5 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; app.RequestShutdown(); };
 app.Run();
 
 Console.WriteLine("Done.");
+RadarLog.Shutdown();
 return 0;

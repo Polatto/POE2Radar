@@ -403,6 +403,7 @@ internal static class DashboardHtml
         <button class="tab" data-tab="atlas">Atlas</button>
         <button class="tab" data-tab="value">Item Value</button>
         <button class="tab" data-tab="settings">Settings</button>
+        <button class="tab" data-tab="diag">Diagnostics</button>
       </div>
 
       <section class="view" data-view="filters">
@@ -629,6 +630,26 @@ internal static class DashboardHtml
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg">&#10003; saved to config</span></div>
       </section>
 
+      <section class="view" data-view="diag" hidden>
+        <div class="panel-grid">
+          <div class="card" style="grid-column:1/-1">
+            <h3>Diagnostics <span class="tag">&middot; record a session &amp; report a bug</span></h3>
+            <div class="row"><div class="rl hint-row">Everything the overlay prints is saved to a session log next to the exe (<code>logs\</code>, last 10 sessions, 20&nbsp;MB cap each). While reproducing a problem, <b>add a note</b> describing what you see and take a <b>snapshot</b> (current state, atlas data, settings, attach health). Then <b>Export</b> a zip and send it to the developer.</div></div>
+            <div class="mechrow">
+              <div class="top">
+                <input class="mname" id="diagNote" placeholder="what are you seeing? (e.g. &ldquo;boss icon missing after zone change&rdquo;)" maxlength="2000">
+                <button class="addbtn" id="diagNoteBtn" style="width:auto;margin:0;padding:8px 16px">Add note</button>
+                <button class="addbtn" id="diagSnapBtn" style="width:auto;margin:0;padding:8px 16px">Snapshot</button>
+                <button class="addbtn" id="diagExportBtn" style="width:auto;margin:0;padding:8px 16px">Export logs (.zip)</button>
+              </div>
+            </div>
+            <div class="row"><div class="rl">Session log<small id="diagPath">&mdash;</small></div><span id="diagSize">&mdash;</span></div>
+            <div class="row"><div class="rl">Exports folder<small id="diagExportDir">&mdash;</small></div><span id="diagMsg"></span></div>
+            <div class="row"><div class="rl hint-row"><b>Privacy:</b> the log, snapshots and the exported zip are redacted &mdash; your user-profile path becomes <code>%USERPROFILE%</code>, your Windows user name <code>&lt;user&gt;</code>, the PC name <code>&lt;machine&gt;</code>, your character name <code>&lt;character&gt;</code>, and e-mail addresses <code>&lt;email&gt;</code>. The zip holds only the logs, snapshots, <code>radar_settings.json</code>, <code>display_rules.json</code> and a <code>system-info.txt</code> (no price or other caches). It is also saved to the exports folder above.</div></div>
+          </div>
+        </div>
+      </section>
+
       <section class="view" data-view="value" hidden>
         <div class="panel-grid">
           <!-- Shared pricing config: applies to BOTH the ground overlay and the hover chip. -->
@@ -736,6 +757,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   if(activeTab==='value'){ loadSettings(); pollPrices(); }
   if(activeTab==='filters') loadFilters();
   if(activeTab==='landmarks') loadLandmarks();
+  if(activeTab==='diag') loadDiag();
   if(activeTab==='atlas'){ if(!atlasData) loadAtlas(); else renderAtlas(); }
 });
 
@@ -750,6 +772,7 @@ async function tick(){
     try{ zone = await getJSON('/api/zone'); }catch(e){ zone=null; }
     renderState();
     if(activeTab==='value') pollPrices();   // keep the league/status live (prices load a few s after launch)
+    if(activeTab==='diag') loadDiag();
   }catch(e){ setConn(false); }
 }
 
@@ -1569,6 +1592,31 @@ function renderState(){
 }
 
 // Update banner: show a download link if a newer version exists on GitHub (best-effort).
+/* ── diagnostics tab (notes / snapshot / export via the loopback-gated /api/diag/*) ── */
+function fmtBytes(n){ if(!(n>=0)) return '—'; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(2)+' MB'; }
+function renderDiag(st){
+  if(!st) return;
+  $('#diagPath').textContent = st.logPath || '(file logging unavailable)';
+  $('#diagSize').textContent = fmtBytes(st.logBytes) + ' / ' + fmtBytes(st.logCapBytes) + (st.capped ? ' (cap reached)' : '');
+  $('#diagExportDir').textContent = st.exportDir || '—';
+}
+function diagMsg(t){ const m=$('#diagMsg'); m.textContent=t; clearTimeout(diagMsg._t); diagMsg._t=setTimeout(()=>m.textContent='',6000); }
+async function loadDiag(){ try{ renderDiag(await getJSON('/api/diag/status')); }catch(e){} }
+async function postDiag(path, body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  const j=await r.json(); if(!r.ok) throw new Error(j&&j.error||r.status); return j;
+}
+function wireDiag(){
+  const note=$('#diagNote');
+  const add=async()=>{ const t=note.value.trim(); if(!t) return;
+    try{ const j=await postDiag('/api/diag/note',{text:t}); note.value=''; renderDiag(j.status); diagMsg('✓ note added'); }catch(e){ diagMsg('note failed: '+e.message); } };
+  $('#diagNoteBtn').onclick=add;
+  note.addEventListener('keydown',e=>{ if(e.key==='Enter') add(); });
+  $('#diagSnapBtn').onclick=async()=>{ diagMsg('taking snapshot…');
+    try{ const j=await postDiag('/api/diag/snapshot'); renderDiag(j.status); diagMsg('✓ snapshot saved'); }catch(e){ diagMsg('snapshot failed: '+e.message); } };
+  $('#diagExportBtn').onclick=()=>{ diagMsg('building zip…'); window.location.href='/api/diag/export'; setTimeout(loadDiag,1500); };
+}
+
 async function checkVersion(){
   try{
     const v=await getJSON('/api/version');
@@ -1580,7 +1628,7 @@ async function checkVersion(){
   }catch(e){}
 }
 
-wireSettings(); wireHpBars(); wireTerrain(); wireGround(); wireHover(); wireMono(); wireExchange();
+wireSettings(); wireHpBars(); wireTerrain(); wireGround(); wireHover(); wireMono(); wireExchange(); wireDiag();
 loadIcons().then(()=>{ loadSettings(); loadFilters(); }); // Rules is the default tab
 tick(); setInterval(tick, 1000);
 checkVersion();
