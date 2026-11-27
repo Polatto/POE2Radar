@@ -124,6 +124,9 @@ public sealed class RadarSettings
     // Island rumours: fogged atlas nodes whose EndgameMaps row carries an Expedition rumour (ocean islands) get
     // "Map · rumour" in teal. Off → those nodes fall back to the plain fog label. On by default.
     public bool AtlasShowRumours { get; set; } = true;
+    // Boat -> islands: from each VISIBLE Expedition logbook boat on the atlas, draw a line to every UNREVEALED
+    // island of its 16x16 grid block, labelled with the island's rumour. On by default.
+    public bool AtlasShowBoatLinks { get; set; } = true;
     // Route chevron spacing (#4): gap between the directional arrowheads drawn along a route, as a multiple
     // of the chevron size (higher = more spread out). Mirrors the GameHelper2 Atlas plugin's RouteArrowSpacing.
     public float AtlasRouteArrowSpacing { get; set; } = 8f;

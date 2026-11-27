@@ -107,6 +107,7 @@ public sealed class OverlayRenderer : IDisposable
             {
                 // The Atlas screen is open: draw the highlight rings + off-screen arrows and the F10 route,
                 // never the world radar/minimap (meaningless over the atlas).
+                DrawAtlasBoats(rt, ctx);                   // Expedition boat -> unrevealed island links (under everything)
                 DrawAtlasRoute(rt, ctx);                   // F10 route line + START/END markers (under the rings)
                 DrawAtlas(rt, ctx);                        // tracked-map rings + off-screen arrows
                 _legendRowRects.Clear();
@@ -269,6 +270,80 @@ public sealed class OverlayRenderer : IDisposable
             _bStyle.Color = new Color4(0.3f, 0.95f, 1f, 1f);
             rt.DrawEllipse(new Ellipse(p, 11f, 11f), _bStyle, 2.5f);
             rt.FillEllipse(new Ellipse(p, 3f, 3f), _bStyle);
+        }
+    }
+
+    /// <summary>Expedition logbook boats: a semi-transparent teal line from each usable boat's node to every
+    /// unrevealed island of its 16x16 grid block, a small anchor ring on the boat node, and the island's rumour in
+    /// the teal rumour chip (skipped where the fog rumour label already shows it). Thickness follows the atlas
+    /// zoom (AtlasScale = UIscale x zoom; ~0.57 at 1080p max zoom-out). Off-screen segments are skipped (culled
+    /// nodes report noisy relPos).</summary>
+    /// <summary>Liang–Barsky: clip segment a→b to the axis-aligned rect; false when it misses the rect.</summary>
+    private static bool ClipSegment(NumVec2 a, NumVec2 b, float x0, float y0, float x1, float y1, out NumVec2 c0, out NumVec2 c1)
+    {
+        c0 = a; c1 = b;
+        float dx = b.X - a.X, dy = b.Y - a.Y, t0 = 0f, t1 = 1f;
+        bool Edge(float p, float q, ref float lo, ref float hi)
+        {
+            if (p == 0f) return q >= 0f;
+            var r = q / p;
+            if (p < 0f) { if (r > hi) return false; if (r > lo) lo = r; }
+            else { if (r < lo) return false; if (r < hi) hi = r; }
+            return true;
+        }
+        if (!Edge(-dx, a.X - x0, ref t0, ref t1) || !Edge(dx, x1 - a.X, ref t0, ref t1) ||
+            !Edge(-dy, a.Y - y0, ref t0, ref t1) || !Edge(dy, y1 - a.Y, ref t0, ref t1)) return false;
+        c0 = new NumVec2(a.X + t0 * dx, a.Y + t0 * dy);
+        c1 = new NumVec2(a.X + t1 * dx, a.Y + t1 * dy);
+        return true;
+    }
+
+    private void DrawAtlasBoats(ID2D1RenderTarget rt, RenderContext ctx)
+    {
+        if (ctx.AtlasBoats is not { Count: > 0 } boats) return;
+        float h0 = ctx.AtlasScale, h1 = ctx.AtlasShearX, h2 = ctx.AtlasOffX,
+              h3 = ctx.AtlasShearY, h4 = ctx.AtlasScaleY, h5 = ctx.AtlasOffY,
+              h6 = ctx.AtlasPersX, h7 = ctx.AtlasPersY;
+        NumVec2 Proj(NumVec2 p) { var w = h6 * p.X + h7 * p.Y + 1f; if (MathF.Abs(w) < 1e-6f) w = 1f; return new NumVec2((h0 * p.X + h1 * p.Y + h2) / w, (h3 * p.X + h4 * p.Y + h5) / w); }
+        float W = ctx.WindowWidth, H = ctx.WindowHeight;
+        bool On(NumVec2 p, float m) => p.X >= -m && p.X <= W + m && p.Y >= -m && p.Y <= H + m;
+        bool Inside(NumVec2 p, float m) => p.X >= m && p.X <= W - m && p.Y >= m && p.Y <= H - m;
+        const float EdgeMargin = 40f;
+        float zs = Math.Clamp(MathF.Abs(h0) / 0.574f, 0.6f, 2.2f);   // zoom factor relative to 1080p max zoom-out
+        float thick = 2f * zs, under = thick + 2f, ring = 7f * zs;
+        var line = new Color4(0.25f, 0.92f, 0.88f, 0.55f);
+        var shade = new Color4(0f, 0f, 0f, 0.35f);
+        foreach (var b in boats)
+        {
+            var a = Proj(b.Anchor);
+            // Off-screen atlas nodes' positions are unreliable (the game briefly overwrites their relPos), so
+            // only draw a boat's links while the boat itself is comfortably inside the view, and only to
+            // islands that are on screen too — near the edges the lines are hidden instead of flickering.
+            if (!Inside(a, EdgeMargin)) continue;
+            for (var i = 0; i < b.Islands.Count; i++)
+            {
+                var p = Proj(b.Islands[i]);
+                // Clip the segment to the (margin-expanded) screen instead of culling on endpoints: a line whose
+                // ends are both off-screen can still cross the view, and endpoint culling made such lines pop in
+                // and out (flicker) as a pan moved an end across the margin. Clipping also keeps D2D away from
+                // huge off-screen coordinates.
+                if (!Inside(p, 0f)) continue;
+                if (!ClipSegment(a, p, -64f, -64f, W + 64f, H + 64f, out var c0, out var c1)) continue;
+                _bStyle!.Color = shade; rt.DrawLine(c0, c1, _bStyle, under);
+                _bStyle.Color = line; rt.DrawLine(c0, c1, _bStyle, thick);
+                if (On(p, 8f)) rt.FillEllipse(new Ellipse(p, 2.5f * zs, 2.5f * zs), _bStyle);
+                var lbl = i < b.Labels.Count ? b.Labels[i] : null;
+                if (lbl != null && On(p, 0f) && _tfSmall != null)
+                {
+                    float fw = lbl.Length * 5.6f + 6f;
+                    float fx = p.X - fw * 0.5f, fy = p.Y + 7f;
+                    rt.FillRectangle(new Vortice.RawRectF(fx - 2f, fy, fx + fw, fy + 14f), _bPanel!);
+                    rt.DrawText(lbl, _tfSmall, new Rect(fx + 1f, fy, fw + 20f, 14f), _bRumour!, DrawTextOptions.None);
+                }
+            }
+            if (!On(a, 16f)) continue;   // ring only when the boat's node itself is on screen
+            _bStyle!.Color = new Color4(0f, 0f, 0f, 0.6f); rt.DrawEllipse(new Ellipse(a, ring, ring), _bStyle, thick + 2f);
+            _bStyle.Color = new Color4(0.25f, 0.92f, 0.88f, 0.95f); rt.DrawEllipse(new Ellipse(a, ring, ring), _bStyle, thick);
         }
     }
 

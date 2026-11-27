@@ -54,6 +54,12 @@ public readonly record struct AtlasMark(float X, float Y, bool Selected, bool Ha
 /// null → default); <see cref="Hops"/> is the number of map steps (drawn as a chip at the target).</summary>
 public readonly record struct AtlasRouteInfo(IReadOnlyList<NumVec2> Points, string? Color, int Hops);
 
+/// <summary>One Expedition logbook boat (atlas "region action button", kind Ocean) linked to the UNREVEALED
+/// islands of its 16x16 grid block. <see cref="Anchor"/> = the boat's node, <see cref="Islands"/> = island node
+/// centres (all canvas-space relPos, projected with the atlas transform). <see cref="Labels"/>[i] is the island's
+/// rumour, or null when nothing should be drawn (no rumour, or the fog label already shows it).</summary>
+public readonly record struct AtlasBoatInfo(NumVec2 Anchor, IReadOnlyList<NumVec2> Islands, IReadOnlyList<string?> Labels);
+
 /// <summary>One priced reward row in the "Runeshape Combinations" panel. <see cref="X"/>/<see cref="Y"/>/
 /// <see cref="W"/>/<see cref="H"/> are the reward row's SCREEN rect (already scaled, from Poe2Runeforge);
 /// the renderer draws <see cref="Text"/> (e.g. "5.4 ex") in <see cref="Color"/> (packed 0xAARRGGBB) just
@@ -195,6 +201,8 @@ public sealed record RenderContext(
     // projected with the atlas homography. Null/empty when auto-routing is off or no current node is known.
     NumVec2? AtlasCurrent = null,
     IReadOnlyList<AtlasRouteInfo>? AtlasAutoRoutes = null,
+    // Expedition boat -> unrevealed island links (AtlasShowBoatLinks). Null when off / atlas closed.
+    IReadOnlyList<AtlasBoatInfo>? AtlasBoats = null,
     // Draw a biome-coloured border around tracked atlas labels (improvement 2). Mirrored from settings.
     bool AtlasBiomeBorder = true,
     // On-node content icons (#5): master toggle + icon height (px). Icons themselves are carried per-mark

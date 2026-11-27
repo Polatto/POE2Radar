@@ -26,6 +26,11 @@ Fixes and additions so far:
   (dashboard toggle *Fog labels*).
 - **Expedition island rumours** — shows each ocean island's rumour (e.g. "Somethin' fishy",
   "Cold as ice") on the atlas before it is revealed (dashboard toggle *Island rumours*).
+- **Expedition boat → islands** — from each usable Expedition logbook boat on the atlas, draws a
+  teal line to every unrevealed island it would reveal (the boat's 16×16 grid block), labelled with
+  the island's rumour (dashboard toggle *Boat → islands*; boats are also listed in `/api/atlas`).
+  Off-screen atlas node positions are unreliable (the game briefly overwrites them), so links are
+  only drawn while the boat and the island are on screen, and are hidden near the screen edges.
 - **Atlas nav fix** — the atlas graph was read once and went stale as the atlas grew, so routes to
   fogged targets were missing. The graph is now rebuilt whenever the edge vector changes, and the
   new `Game/AtlasNav.cs` does a multi-source BFS from every accessible node to **every** matching

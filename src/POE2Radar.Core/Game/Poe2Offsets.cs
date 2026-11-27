@@ -622,6 +622,11 @@ public static class Poe2
         public const int Flags       = 0x32F; // (community) u8: bit0 unlocked, bit1 visited
         public const int GridPos     = 0x320;  // ✓ live 2026-11-25 — 2026-11-18 patch moved it back to 0x320 (--atlas-fogdump: 1228 nodes, X[-32..111] Y[-32..79], 1982/1982 edges resolve). Was 0x310 on 2026-09-05: StdTuple2D<int> X[-48..31] Y[16..127] — the node-graph key. 2026-09-05: was 0x320. // ✓ live 2026-06-08 — StdTuple2D<int> atlas grid coord (X,Y); 1:1 with node, range small (e.g. X[-16..31] Y[0..47]). The key for node-graph pathfinding. (GameHelper2-sourced)
         public const int Completion  = 0x339; // (community) u8 per-node completion id
+        /// <summary>✓ live 2026-11-25 (Research --boat-dump fog diff) — u16 sequential REVEAL id: 0xFFFF = never
+        /// revealed (fogged Expedition island / unexplored node); set to the next id when the node is revealed
+        /// (sailing a block gave its 13 nodes 0x023A..0x0248). Fog-radius "peeks" keep 0xFFFF.</summary>
+        public const int RevealId    = 0x33E;
+        public const ushort RevealIdNone = 0xFFFF;
         public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
 
         /// <summary>Alternate node-DATA model (GameHelper2): <c>*(*(node+0x10)+0x20)</c> → a struct with
@@ -642,6 +647,24 @@ public static class Poe2
         public const int DataStatusLockedBit     = 0x04; // ✓ live 2026-11-25 — status bit2 = locked
         public const int DataStatusHasContentBit = 0x10; // ✓ live 2026-11-25 — status bit set on nodes carrying content (badge/headline)
         public const int DataMapId   = 0x290;  // ✓ live 2026-09-05 — ptr chain → UTF-16 "MapXxx" (the ROLLED map). 2026-09-05: was 0x2A0.  // ptr chain → UTF-16 "MapXxx"
+    }
+
+    /// <summary>Atlas "region action button" (✓ live 2026-11-25, Research <c>--boat-dump</c>) — the Expedition
+    /// logbook BOAT ("Uncharted Waters", kind "Ocean") and its Ritual/Breach/Tower siblings. Direct children of
+    /// the atlas node canvas (vtable mod+0x30F8918 on 2026-11-25; POE2Radar detects the class STRUCTURALLY via
+    /// the <see cref="KindRow"/> string, so only the field offsets matter). Visibility = UiElement Flags bit 0x0B;
+    /// hidden buttons have relPos (0,0). <para><b>Boat → islands:</b> no pointer link — the atlas is tiled into
+    /// 16×16 grid blocks (<c>block = (gx &gt;&gt; 4, gy &gt;&gt; 4)</c>, arithmetic shift). A boat reveals every atlas node
+    /// in its block; its grid is one of the block's edge nodes (4 buttons per ocean block, one per edge).
+    /// Sailing a block destroys all 4 buttons (canvas child count changes).</para></summary>
+    public static class AtlasRegionButton
+    {
+        public const nint VtableRva = 0x30F8918; // reference only (2026-11-25); detection is structural
+        public const int KindRow    = 0x308;     // ptr → EndgameRegionActionButtons.dat row; row+0x00 → UTF-16 "Ocean"/"Forest"/"Breach"/"Tower"
+        public const int GridPos    = 0x318;     // int x, y — grid of the node the button sits on (same space as AtlasNode.GridPos)
+        public const int Kind       = 0x320;     // int enum: 0 Breach, 1 Forest, 2 Ocean (Expedition boat), 3 Tower
+        public const int KindOcean  = 2;
+        public const int BlockShift = 4;         // 16×16 grid blocks
     }
 
     /// <summary>Atlas CONNECTION GRAPH (✓ live 2026-06-08, GameHelper2-sourced). The node canvas (the

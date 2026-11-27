@@ -492,6 +492,7 @@ internal static class DashboardHtml
               <label title="Content icon size (px)">Icon size <input type="number" data-atset="atlasContentIconSize" min="12" max="64" step="1" style="width:56px"></label>
               <label title="Small map name (+ content headline) on fogged / un-revealed atlas maps"><input type="checkbox" data-atset="atlasShowFogLabels"> Fog labels</label>
               <label title="Teal map name + Expedition rumour on fogged ocean-island nodes (off = plain fog label)"><input type="checkbox" data-atset="atlasShowRumours"> Island rumours</label>
+              <label title="Line from each usable Expedition logbook boat to the unrevealed islands it reveals (with their rumours)"><input type="checkbox" data-atset="atlasShowBoatLinks"> Boat &rarr; islands</label>
               <label title="Spacing of the directional arrows along routes">Arrow spacing <input type="number" data-atset="atlasRouteArrowSpacing" min="1.5" max="18" step="0.5" style="width:56px"></label>
             </div>
 

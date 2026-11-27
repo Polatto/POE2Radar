@@ -69,11 +69,21 @@ public sealed class RadarApp : IDisposable
     // element scrolled off-screen, or garbage) — without the fallback those bad reads streaked lines.
     private readonly record struct AtlasPoint(nint El, float Bx, float By);
     private sealed record AtlasAutoSpec(IReadOnlyList<AtlasPoint> Points, string? Color, int Hops);
-    private sealed record AtlasRender(bool Open, IReadOnlyList<AtlasMark> Marks, AtlasPoint? Start, AtlasPoint? End, IReadOnlyList<AtlasPoint>? Route, AtlasPoint? Current, IReadOnlyList<AtlasAutoSpec> AutoRoutes)
+    // Expedition boat -> unrevealed islands of its 16x16 block; Labels[i] = rumour or null (fog label already shows it).
+    private sealed record AtlasBoatSpec(AtlasPoint Anchor, IReadOnlyList<AtlasPoint> Islands, IReadOnlyList<string?> Labels);
+    private sealed record AtlasRender(bool Open, IReadOnlyList<AtlasMark> Marks, AtlasPoint? Start, AtlasPoint? End, IReadOnlyList<AtlasPoint>? Route, AtlasPoint? Current, IReadOnlyList<AtlasAutoSpec> AutoRoutes, IReadOnlyList<AtlasBoatSpec> Boats)
     {
-        public static readonly AtlasRender Closed = new(false, Array.Empty<AtlasMark>(), null, null, null, null, Array.Empty<AtlasAutoSpec>());
+        public static readonly AtlasRender Closed = new(false, Array.Empty<AtlasMark>(), null, null, null, null, Array.Empty<AtlasAutoSpec>(), Array.Empty<AtlasBoatSpec>());
     }
+    private readonly List<Poe2Atlas.AtlasBoatButton> _atlasButtons = new();   // world-thread scratch: region buttons from the canvas walk
     private volatile AtlasRender _atlasRender = AtlasRender.Closed;
+    // Render-thread glitch filter for boat-link endpoints: off-screen atlas nodes' RelativePos is briefly
+    // overwritten with a wrong value for a few ms (seen live: a node reads its true pos, then one sample of a
+    // pos hundreds of px away, then the true pos again), which made long boat lines flicker near the screen
+    // edges. Each point is predicted as lastAccepted + this frame's common pan delta (median over all boat
+    // points, so a glitch can't skew it); a read far from the prediction is rejected unless it persists.
+    private readonly Dictionary<nint, (NumVec2 Pos, int Rejects)> _boatPosFilter = new();
+    private readonly List<(nint El, NumVec2 Raw, bool Ok)> _boatRaw = new();
     private readonly List<AtlasMark> _atlasMarkFrame = new();   // render-thread scratch: marks with per-frame-fresh relPos
 
     // ── Runeforge ("Runeshape Combinations") priced-reward labels: same lock-free published-record idiom.
@@ -1114,6 +1124,7 @@ public sealed class RadarApp : IDisposable
         NumVec2? atlasStart = null, atlasEnd = null, atlasCurrent = null;
         List<NumVec2>? atlasRoute = null;
         List<AtlasRouteInfo>? atlasAutoRoutes = null;
+        List<AtlasBoatInfo>? atlasBoats = null;
 
         // One lock-free read each of the two published snapshots — everything drawn this frame comes from
         // these two + the live render-rate reads below.
@@ -1221,6 +1232,50 @@ public sealed class RadarApp : IDisposable
                         if (pl.Count >= 2) atlasAutoRoutes.Add(new AtlasRouteInfo(pl, spec.Color, spec.Hops));
                     }
                 }
+                if (ar.Boats is { Count: > 0 } && _settings.AtlasShowBoatLinks)
+                {
+                    // 1) raw live reads for every boat endpoint
+                    _boatRaw.Clear();
+                    void Raw(AtlasPoint p)
+                    {
+                        float rx = 0f, ry = 0f;
+                        var ok = p.El != 0 && _liveRender.TryRelPos(p.El, out rx, out ry);
+                        _boatRaw.Add((p.El, ok ? new NumVec2(rx, ry) : new NumVec2(p.Bx, p.By), ok));
+                    }
+                    foreach (var b in ar.Boats) { Raw(b.Anchor); foreach (var p in b.Islands) Raw(p); }
+                    // 2) common pan delta = median of (raw - lastAccepted) over points with history
+                    var dxs = new List<float>(_boatRaw.Count); var dys = new List<float>(_boatRaw.Count);
+                    foreach (var r in _boatRaw)
+                        if (r.Ok && _boatPosFilter.TryGetValue(r.El, out var h)) { dxs.Add(r.Raw.X - h.Pos.X); dys.Add(r.Raw.Y - h.Pos.Y); }
+                    float mdx = 0f, mdy = 0f;
+                    if (dxs.Count > 0) { dxs.Sort(); dys.Sort(); mdx = dxs[dxs.Count / 2]; mdy = dys[dys.Count / 2]; }
+                    // 3) accept reads close to the prediction; reject isolated jumps (accept after 3 frames in a row)
+                    const float tol = 24f;
+                    var filtered = new Dictionary<nint, NumVec2>(_boatRaw.Count);
+                    foreach (var r in _boatRaw)
+                    {
+                        if (r.El == 0 || filtered.ContainsKey(r.El)) continue;
+                        NumVec2 pos;
+                        if (!_boatPosFilter.TryGetValue(r.El, out var h)) { pos = r.Raw; _boatPosFilter[r.El] = (pos, 0); }
+                        else
+                        {
+                            var pred = new NumVec2(h.Pos.X + mdx, h.Pos.Y + mdy);
+                            if (r.Ok && (NumVec2.Distance(r.Raw, pred) <= tol || h.Rejects >= 2)) { pos = r.Raw; _boatPosFilter[r.El] = (pos, 0); }
+                            else { pos = pred; _boatPosFilter[r.El] = (pos, h.Rejects + 1); }
+                        }
+                        filtered[r.El] = pos;
+                    }
+                    if (_boatPosFilter.Count > 4 * filtered.Count + 256)   // drop history of elements no longer drawn
+                        foreach (var k in _boatPosFilter.Keys.ToList()) if (!filtered.ContainsKey(k)) _boatPosFilter.Remove(k);
+                    NumVec2 F(AtlasPoint p) => p.El != 0 && filtered.TryGetValue(p.El, out var v) ? v : new NumVec2(p.Bx, p.By);
+                    atlasBoats = new List<AtlasBoatInfo>(ar.Boats.Count);
+                    foreach (var b in ar.Boats)
+                    {
+                        var il = new NumVec2[b.Islands.Count];
+                        for (var i = 0; i < il.Length; i++) il[i] = F(b.Islands[i]);
+                        atlasBoats.Add(new AtlasBoatInfo(F(b.Anchor), il, b.Labels));
+                    }
+                }
             }
         }
         else { if (_hpFrame.Count > 0) _hpFrame.Clear(); if (_itemFrame.Count > 0) _itemFrame.Clear(); if (_lootTagFrame.Count > 0) _lootTagFrame.Clear(); if (_atlasMarkFrame.Count > 0) _atlasMarkFrame.Clear(); _hoverFrame = null; }
@@ -1314,6 +1369,7 @@ public sealed class RadarApp : IDisposable
             // Auto-route from the current node to tracked tiles + the "you are here" marker (improvement 1).
             AtlasCurrent: (ar.Open && _settings.AtlasShowRoute) ? atlasCurrent : null,
             AtlasAutoRoutes: (ar.Open && _settings.AtlasShowRoute && _settings.AtlasAutoRoute) ? atlasAutoRoutes : null,
+            AtlasBoats: (ar.Open && _settings.AtlasShowBoatLinks) ? atlasBoats : null,
             AtlasBiomeBorder: _settings.AtlasShowBiomeBorder,
             AtlasContentIcons: _settings.AtlasShowContentIcons,
             AtlasContentIconSize: _settings.AtlasContentIconSize,
@@ -2375,8 +2431,10 @@ public sealed class RadarApp : IDisposable
         // Anchor the scan to the live game-heap slab (the catalog shares the arena with AreaInstance).
         var d = _atlas.Read(_lastAreaInstance);
         // Live node graph (atlas nodes are UiElements) — summary + the locally-visible highlight set.
-        var nodes = _inGameStateForApi != 0 ? _atlas.ReadNodes(_inGameStateForApi) : new List<Poe2Atlas.AtlasNodeLive>();
+        var apiButtons = new List<Poe2Atlas.AtlasBoatButton>();
+        var nodes = _inGameStateForApi != 0 ? _atlas.ReadNodes(_inGameStateForApi, apiButtons) : new List<Poe2Atlas.AtlasNodeLive>();
         var vis = nodes.Where(n => n.Visible).ToList();
+        var apiBoats = Poe2Atlas.LinkBoats(apiButtons, nodes, visibleOnly: false);
         return new
         {
             located = d.Located,
@@ -2440,6 +2498,26 @@ public sealed class RadarApp : IDisposable
                     hops = arn.AutoRoutes.Select(r => r.Hops).ToArray(),
                     f10Route = arn.Route?.Count ?? 0,
                 } : null,
+            },
+            // Expedition boats (Ocean region action buttons) -> their 16x16 block's islands. Debug view of what
+            // the "Boat -> islands" overlay draws (it uses visible boats with a streamed-in anchor, unrevealed islands).
+            boats = new
+            {
+                buttons = apiButtons.Count,
+                ocean = apiBoats.Count,
+                visible = apiBoats.Count(b => b.Visible),
+                published = _atlasRender.Boats.Count,
+                list = apiBoats.OrderByDescending(b => b.Visible).Select(b => new
+                {
+                    grid = new[] { b.Grid.X, b.Grid.Y },
+                    block = new[] { b.Block.X, b.Block.Y },
+                    visible = b.Visible,
+                    anchor = b.Anchor >= 0 ? nodes[b.Anchor].MapName : null,
+                    islands = b.Islands.Select(i => nodes[i]).Select(n => new
+                    {
+                        grid = new[] { n.GridX, n.GridY }, map = n.MapName, rumour = n.Rumour, revealed = n.Revealed, visible = n.Visible,
+                    }),
+                }),
             },
             // The individual live nodes for the dashboard's grid. On-screen first, then content/unvisited.
             nodeList = nodes
@@ -2539,7 +2617,7 @@ public sealed class RadarApp : IDisposable
     /// empty reads so the route doesn't flicker; freezes the marks when the view is static (no arrow jitter).</summary>
     private void UpdateAtlas(nint inGameState)
     {
-        var nodes = _atlas.ReadNodes(inGameState);
+        var nodes = _atlas.ReadNodes(inGameState, _atlasButtons);
         if (nodes.Count == 0)
         {
             // Empty read: ride over TRANSIENT misses (a node read hiccupping ~1×/sec was the ~0.1s route
@@ -2598,6 +2676,15 @@ public sealed class RadarApp : IDisposable
         if (_settings.AtlasNavTags is { } navT)                                      // …incl. a same-size edit (rename)
             foreach (var t in navT) sig = sig * 31L ^ StringComparer.OrdinalIgnoreCase.GetHashCode(t ?? "");
         sig = sig * 1000003L ^ _atlas.GraphVersion;                                  // re-solve when the graph grows (atlas streams in)
+        // Expedition boats: visible boats + their unrevealed islands (changes when a boat becomes usable or a
+        // block is sailed). Linking is pure/O(nodes), no extra memory reads.
+        var boats = _settings.AtlasShowBoatLinks ? Poe2Atlas.LinkBoats(_atlasButtons, nodes, visibleOnly: true) : new List<Poe2Atlas.AtlasBoatLive>();
+        sig = sig * 1000003L ^ (_settings.AtlasShowBoatLinks ? 1L : 0L);
+        foreach (var b in boats)
+        {
+            sig = sig * 31L ^ b.Grid.GetHashCode() ^ ((long)b.Anchor << 20);
+            foreach (var ii in b.Islands) if (!nodes[ii].Revealed) sig = sig * 31L ^ ii;
+        }
         // Rebuild when the #3 hide filters, #5 icon toggle, or #7 group set change.
         sig = sig * 1000003L ^ (_settings.AtlasHideCompleted ? 2L : 0L) ^ (_settings.AtlasHideAccessible ? 4L : 0L)
             ^ (_settings.AtlasShowContentIcons ? 8L : 0L) ^ (_settings.AtlasShowFogLabels ? 16L : 0L) ^ (_settings.AtlasShowRumours ? 1L << 40 : 0L) ^ ((long)(_settings.AtlasGroups?.Count ?? 0) << 5);
@@ -2631,6 +2718,7 @@ public sealed class RadarApp : IDisposable
                         if (!string.IsNullOrWhiteSpace(m)) groupColor.TryAdd(m, grp.Color);
         }
         var marks = new List<AtlasMark>(128);
+        HashSet<nint>? rumourLabelled = null;   // nodes whose teal fog rumour label is drawn (boat links skip their label)
         // Routing inputs gathered alongside the marks: grid→node ELEMENT (so the render thread re-reads each
         // route point's live relPos per frame), the tracked tiles to route to, and each tile's ring colour.
         var gridToPoint = new Dictionary<(int, int), AtlasPoint>(nodes.Count);
@@ -2696,6 +2784,25 @@ public sealed class RadarApp : IDisposable
             // itself is recomputed by AtlasNav.Solve below; this just records the ring colour per goal.)
             if (isNav && !n.Completed) { trackedGrids.Add(n.Grid); gridColor[n.Grid] = color; }
             marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow, isNav, n.Element, contentIcons, n.Visible, fogLabel, rumourMark));
+            if (rumourMark && label == null) (rumourLabelled ??= new HashSet<nint>()).Add(n.Element);
+        }
+
+        // Expedition boats -> unrevealed islands of the boat's 16x16 block. Skip a boat whose anchor node isn't
+        // streamed in. Islands already carrying the teal fog rumour label get the line only (no double label).
+        var boatSpecs = new List<AtlasBoatSpec>(boats.Count);
+        foreach (var b in boats)
+        {
+            if (b.Anchor < 0) continue;
+            var an = nodes[b.Anchor];
+            var pts = new List<AtlasPoint>(b.Islands.Count); var lbls = new List<string?>(b.Islands.Count);
+            foreach (var ii in b.Islands)
+            {
+                var isl = nodes[ii];
+                if (isl.Revealed || ii == b.Anchor) continue;
+                pts.Add(new AtlasPoint(isl.Element, isl.X, isl.Y));
+                lbls.Add(string.IsNullOrEmpty(isl.Rumour) || (rumourLabelled?.Contains(isl.Element) ?? false) ? null : isl.Rumour);
+            }
+            if (pts.Count > 0) boatSpecs.Add(new AtlasBoatSpec(new AtlasPoint(an.Element, an.X, an.Y), pts, lbls));
         }
 
         // ── Auto-routing (improvement 1): "you are here" + a route to each tracked tile ──────────────
@@ -2724,7 +2831,7 @@ public sealed class RadarApp : IDisposable
         }
 
         var (start, end, route) = BuildAtlasRoute(nodes, startGrid, goalGrid);
-        _atlasRender = new AtlasRender(true, marks, start, end, route, currentPt, autoRoutes);   // publish atomically
+        _atlasRender = new AtlasRender(true, marks, start, end, route, currentPt, autoRoutes, boatSpecs);   // publish atomically
     }
 
     private string? _lastNavLog;

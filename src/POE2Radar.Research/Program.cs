@@ -70,6 +70,44 @@ if (HasFlag(args, "--boat-dump"))
         TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "boat-dump.txt"),
         TryGetHexArg(args, "--btnvt") ?? 0x30F8918, TryGetHexArg(args, "--nodevt") ?? 0x30F5718);
 
+if (HasFlag(args, "--grid-fit"))
+{
+    var (_, igsG, _, _) = ResolveChain(process, reader);
+    if (igsG == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    return POE2Radar.Research.GridFit.Run(reader, igsG);
+}
+
+if (HasFlag(args, "--boat-jitter"))
+{
+    var (_, igsJ, _, _) = ResolveChain(process, reader);
+    if (igsJ == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    return POE2Radar.Research.BoatJitter.Run(reader, igsJ, TryGetIntArg(args, "--secs") ?? 20);
+}
+
+if (HasFlag(args, "--boat-links"))
+{
+    // Validates the overlay's Core path (Poe2Atlas.ReadNodes + LinkBoats) against --boat-dump. Atlas open.
+    var (_, igsB, _, _) = ResolveChain(process, reader);
+    if (igsB == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var atlasB = new POE2Radar.Core.Game.Poe2Atlas(reader);
+    var btns = new List<POE2Radar.Core.Game.Poe2Atlas.AtlasBoatButton>();
+    var nb = atlasB.ReadNodes(igsB, btns);
+    for (var w = 0; (nb.Count == 0 || !atlasB.AllTagsResolved) && w < 100; w++) { Thread.Sleep(50); nb = atlasB.ReadNodes(igsB, btns); }
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    for (var k = 0; k < 10; k++) nb = atlasB.ReadNodes(igsB, btns);
+    var perRead = sw.Elapsed.TotalMilliseconds / 10;
+    var linked = POE2Radar.Core.Game.Poe2Atlas.LinkBoats(btns, nb, visibleOnly: false);
+    Console.WriteLine($"nodes {nb.Count}  buttons {btns.Count} ({string.Join(", ", btns.GroupBy(b => b.KindName).Select(g => $"{g.Key} {g.Count()}/vis {g.Count(x => x.Visible)}"))})  read {perRead:0.0} ms");
+    Console.WriteLine($"ocean boats {linked.Count}, visible {linked.Count(b => b.Visible)}, revealed nodes {nb.Count(n => n.Revealed)}/{nb.Count}");
+    foreach (var b in linked.Where(b => b.Visible))
+    {
+        var un = b.Islands.Where(i => !nb[i].Revealed && i != b.Anchor).ToList();
+        Console.WriteLine($"BOAT ({b.Grid.X},{b.Grid.Y}) block ({b.Block.X},{b.Block.Y}) anchor {(b.Anchor >= 0 ? $"{nb[b.Anchor].MapName} rev {nb[b.Anchor].Revealed}" : "NONE (skipped)")} blockNodes {b.Islands.Count} unrevealed {un.Count}");
+        foreach (var i in un) Console.WriteLine($"    ({nb[i].GridX},{nb[i].GridY}) {nb[i].MapName} vis {(nb[i].Visible ? 1 : 0)} rumour '{nb[i].Rumour}'");
+    }
+    return 0;
+}
+
 if (HasFlag(args, "--ui-strings-dump"))
     return POE2Radar.Research.UiStringsDump.Run(process, reader,
         TryGetStrArg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "ui-strings.txt"));

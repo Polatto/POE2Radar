@@ -278,8 +278,13 @@ public sealed class Poe2Atlas
         float X, float Y, float W, float H, float Scale, bool Visible, int IconType,
         int GridX, int GridY, string MapName, string MapCode, IReadOnlyList<string> Tags,
         bool Accessible, bool Completed, string Kind,
-        string MapType, string MapGroup, IReadOnlyList<string> MapDataTags, byte Status = 0, string Rumour = "")
+        string MapType, string MapGroup, IReadOnlyList<string> MapDataTags, byte Status = 0, string Rumour = "", ushort RevealId = Poe2.AtlasNode.RevealIdNone)
     {
+        /// <summary>Ever revealed (u16 reveal id at <see cref="Poe2Offsets.AtlasNode.RevealId"/> != 0xFFFF). An
+        /// unrevealed node can still be fog-radius VISIBLE; an unrevealed Expedition island is a boat target.</summary>
+        public bool Revealed => RevealId != Poe2.AtlasNode.RevealIdNone;
+        /// <summary>The 16x16 atlas grid block this node belongs to (see <see cref="Poe2Offsets.AtlasRegionButton"/>).</summary>
+        public (int X, int Y) Block => (GridX >> Poe2.AtlasRegionButton.BlockShift, GridY >> Poe2.AtlasRegionButton.BlockShift);
         /// <summary>The node's atlas grid coordinate (<see cref="Poe2Offsets.AtlasNode.GridPos"/>) — the
         /// key into the connection graph for routing (unique per node; stable while the atlas is open).</summary>
         public (int X, int Y) Grid => (GridX, GridY);
@@ -399,12 +404,16 @@ public sealed class Poe2Atlas
         if (count is <= 0 or > 20000) { Invalidate(); return false; }
 
         var matched = 0;
+        _buttons.Clear();
+        if (count != _buttonChildCount || canvas != _buttonCanvas) { _buttonCache.Clear(); _buttonChildCount = count; _buttonCanvas = canvas; }
         var resolveBudget = 80;  // cap new content resolves per call → spread the first-read cost
         var allCached = true;    // false if any node was left unresolved this pass (budget spent)
         for (long i = 0; i < count; i++)
         {
             var el = Ptr(first + (nint)(i * 8));
-            if (el == 0 || Ptr(el) != _nodeVtable) continue;     // vtable == node class
+            if (el == 0) continue;
+            var vt = Ptr(el);
+            if (vt != _nodeVtable) { if (vt != 0) TryCollectButton(el, vt); continue; }   // boats ride on the same walk
             matched++;
             _reader.TryReadStruct<uint>(el + Poe2.AtlasNode.MapNodeId, out var id);
             _reader.TryReadStruct<uint>(el + Poe2.AtlasNode.Content, out var content);
@@ -449,7 +458,8 @@ public sealed class Poe2Atlas
             var kind = Classify(resolved.code);   // map-archetype class (Citadel/Boss/Tower/Unique/Merchant/Normal) — first-class track target
             var meta = resolved.meta;             // offline maps.json classification (type/group/tags); default when unmapped
             outNodes.Add(new AtlasNodeLive(el, id, content, state, biome, flags, compl, x, y, w, h, scale, visible, iconType, gridX, gridY, resolved.map, resolved.code, resolved.content, accessible, completed, kind,
-                meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags, status, ReadRumour(el)));
+                meta.Type ?? "", meta.Group ?? "", meta.Tags ?? NoTags, status, ReadRumour(el),
+                _reader.TryReadStruct<ushort>(el + Poe2.AtlasNode.RevealId, out var rid) ? rid : Poe2.AtlasNode.RevealIdNone));
         }
         if (matched < 8) { Invalidate(); return false; }          // canvas no longer the node container
         AllTagsResolved = allCached;   // true once every node's tags are cached (seed defaults only then)
@@ -489,7 +499,114 @@ public sealed class Poe2Atlas
     /// defaults only when the full map/content set is available.</summary>
     public bool AllTagsResolved { get; private set; }
 
-    private void Invalidate() { _nodeCanvas = 0; _nodeVtable = 0; _hiddenTicks = 0; _tagCache.Clear(); _graph.Clear(); _graphCanvas = 0; _graphBegin = 0; _graphEnd = 0; _currentMarker = 0; }
+    // -- Expedition boats (atlas "region action buttons", Poe2.AtlasRegionButton) --
+    /// <summary>One region action button as read off the canvas (kind 2 = Ocean = Expedition logbook boat).</summary>
+    public readonly record struct AtlasBoatButton(nint Element, int GridX, int GridY, int Kind, string KindName, bool Visible)
+    {
+        public (int X, int Y) Grid => (GridX, GridY);
+        public (int X, int Y) Block => (GridX >> Poe2.AtlasRegionButton.BlockShift, GridY >> Poe2.AtlasRegionButton.BlockShift);
+        public bool IsBoat => Kind == Poe2.AtlasRegionButton.KindOcean;
+    }
+
+    /// <summary>A boat linked to its block: <see cref="Anchor"/> = index (into the node list passed to
+    /// <see cref="LinkBoats"/>) of the node at the boat's grid, -1 when that block isn't streamed in;
+    /// <see cref="Islands"/> = indices of every node in the boat's 16x16 block (filter on Revealed).</summary>
+    public sealed record AtlasBoatLive(AtlasBoatButton Button, int Anchor, IReadOnlyList<int> Islands)
+    {
+        public (int X, int Y) Grid => Button.Grid;
+        public (int X, int Y) Block => Button.Block;
+        public bool Visible => Button.Visible;
+    }
+
+    private readonly List<AtlasBoatButton> _buttons = new();   // filled by ReadCanvasNodes (caller holds _nodeLock)
+    // Grid/kind are static per element; cleared whenever the canvas child count changes (a sailed block destroys its buttons).
+    private readonly Dictionary<nint, (int gx, int gy, int kind, string name)> _buttonCache = new();
+    private readonly HashSet<nint> _nonButtonVt = new();       // vtables already rejected by the structural check
+    private nint _buttonVtable;                                // detected region-button class (0 = not yet)
+    private long _buttonChildCount; private nint _buttonCanvas;
+    private static readonly string[] ButtonKinds = { "Breach", "Forest", "Ocean", "Tower" };
+
+    /// <summary>Region-action-button class detection is STRUCTURAL (vtables drift per patch): +0x308 -> a dat row
+    /// whose +0x00 is a UTF-16 kind name in {Breach, Forest, Ocean, Tower} matching the +0x320 enum. Each foreign
+    /// vtable is tested once; afterwards it's one vtable compare per child. Grid/kind are cached per element;
+    /// only Flags (visibility) is re-read each call.</summary>
+    private void TryCollectButton(nint el, nint vt)
+    {
+        if (_buttonVtable == 0)
+        {
+            if (_nonButtonVt.Contains(vt)) return;
+            if (ReadButtonKind(el) is null) { if (_nonButtonVt.Count < 4096) _nonButtonVt.Add(vt); return; }
+            _buttonVtable = vt;
+        }
+        else if (vt != _buttonVtable) return;
+        if (!_buttonCache.TryGetValue(el, out var c))
+        {
+            var k = ReadButtonKind(el);
+            if (k is null) return;
+            _reader.TryReadStruct<int>(el + Poe2.AtlasRegionButton.GridPos, out var gx);
+            _reader.TryReadStruct<int>(el + Poe2.AtlasRegionButton.GridPos + 4, out var gy);
+            c = (gx, gy, k.Value.kind, k.Value.name);
+            _buttonCache[el] = c;
+        }
+        _reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var fl);
+        _buttons.Add(new AtlasBoatButton(el, c.gx, c.gy, c.kind, c.name, ((fl >> Poe2.UiElement.FlagVisibleBit) & 1) != 0));
+    }
+
+    private (int kind, string name)? ReadButtonKind(nint el)
+    {
+        if (!_reader.TryReadStruct<int>(el + Poe2.AtlasRegionButton.Kind, out var kind) || kind is < 0 or > 3) return null;
+        var row = Ptr(el + Poe2.AtlasRegionButton.KindRow);
+        if (row == 0) return null;
+        var sp = Ptr(row);
+        if (sp == 0) return null;
+        var name = _reader.ReadStringUtf16(sp, 16);
+        return name == ButtonKinds[kind] ? (kind, name) : null;
+    }
+
+    /// <summary>Read the live atlas nodes AND the region action buttons (boats) found on the same canvas walk,
+    /// as one consistent snapshot. <paramref name="buttonsOut"/> is cleared + filled (all kinds, visible or not).</summary>
+    public List<AtlasNodeLive> ReadNodes(nint inGameState, List<AtlasBoatButton> buttonsOut)
+    {
+        lock (_nodeLock)
+        {
+            var nodes = ReadNodes(inGameState);
+            buttonsOut.Clear();
+            if (nodes.Count > 0) buttonsOut.AddRange(_buttons);
+            return nodes;
+        }
+    }
+
+    /// <summary>Link each Ocean button (Expedition boat) to its 16x16 grid block: anchor = node whose grid ==
+    /// the boat's grid (-1 = block not streamed in; callers skip it), islands = every node of the block.
+    /// Pure (no memory reads), O(nodes + boats).</summary>
+    public static List<AtlasBoatLive> LinkBoats(IReadOnlyList<AtlasBoatButton> buttons, IReadOnlyList<AtlasNodeLive> nodes, bool visibleOnly)
+    {
+        var res = new List<AtlasBoatLive>();
+        if (buttons.Count == 0 || nodes.Count == 0) return res;
+        Dictionary<(int, int), List<int>>? byBlock = null;
+        Dictionary<(int, int), int>? byGrid = null;
+        foreach (var b in buttons)
+        {
+            if (!b.IsBoat || (visibleOnly && !b.Visible)) continue;
+            if (byBlock == null)
+            {
+                byBlock = new(); byGrid = new(nodes.Count);
+                for (var i = 0; i < nodes.Count; i++)
+                {
+                    var n = nodes[i];
+                    byGrid[n.Grid] = i;
+                    if (!byBlock.TryGetValue(n.Block, out var l)) byBlock[n.Block] = l = new List<int>(16);
+                    l.Add(i);
+                }
+            }
+            var anchor = byGrid!.TryGetValue(b.Grid, out var ai) ? ai : -1;
+            IReadOnlyList<int> isl = byBlock.TryGetValue(b.Block, out var bl) ? bl : Array.Empty<int>();
+            res.Add(new AtlasBoatLive(b, anchor, isl));
+        }
+        return res;
+    }
+
+    private void Invalidate() { _buttons.Clear(); _buttonCache.Clear(); _buttonVtable = 0; _nonButtonVt.Clear(); _nodeCanvas = 0; _nodeVtable = 0; _hiddenTicks = 0; _tagCache.Clear(); _graph.Clear(); _graphCanvas = 0; _graphBegin = 0; _graphEnd = 0; _currentMarker = 0; }
 
     /// <summary>The player's CURRENT atlas node grid coord (the "player icon" tile), via the marker element
     /// (<see cref="Poe2Offsets.AtlasGraph.CurrentMarkerNodePtr"/>): <c>*(marker+0x300)</c> → current node →
