@@ -14,9 +14,9 @@ quality-of-life feature.
 
 This repository is a fork of [Sikaka/POE2Radar](https://github.com/Sikaka/POE2Radar). All credit
 for the original overlay goes to its authors; this fork keeps the upstream history and tracks it as
-the `upstream` remote. Releases linked below are the upstream ones and do **not** include the
-changes listed here — build from source to get them. Everything added stays read-only: nothing in
-this fork writes to game memory.
+the `upstream` remote. Releases linked below are this fork's own builds (starting at v0.19.0) and
+include the changes listed here; the in-app update check also points at this fork. Everything added
+stays read-only: nothing in this fork writes to game memory.
 
 Fixes and additions so far:
 
@@ -74,7 +74,7 @@ Fixes and additions so far:
 ## Download (no build required)
 
 Grab the latest **`POE2Radar-vX.Y.Z-win-x64.zip`** from the
-[Releases page](https://github.com/Sikaka/POE2Radar/releases), unzip, and run `POE2Radar.Overlay.exe`
+[Releases page](https://github.com/Polatto/POE2Radar/releases), unzip, and run `POE2Radar.Overlay.exe`
 **as Administrator** (reading another process's memory requires it) with PoE2 already running.
 The build is self-contained — no .NET install needed.
 
